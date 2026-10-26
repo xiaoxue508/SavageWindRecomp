@@ -1,0 +1,154 @@
+name: Sync Upstream and Build Windows Release
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - test
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-build-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Check Upstream and Sync
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.sync_check.outputs.should_build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: test
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check upstream for updates and merge
+        id: sync_check
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/Revivedx/SavageWindRecomp.git || true
+          git fetch upstream test
+
+          UPSTREAM_SHA=$(git rev-parse upstream/test)
+          LOCAL_SHA=$(git rev-parse HEAD)
+          echo "Upstream test SHA: $UPSTREAM_SHA"
+          echo "Local test SHA:    $LOCAL_SHA"
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+              echo "No new commits upstream. Skipping build to save CI minutes."
+              echo "should_build=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          if ! git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            echo "Upstream has new commits. Merging upstream/test into test..."
+            git merge --no-edit upstream/test -m "sync: upstream test ($UPSTREAM_SHA)"
+            git push origin test
+          else
+            echo "Local test branch is already up to date with upstream."
+          fi
+
+          echo "should_build=true" >> $GITHUB_OUTPUT
+
+  build:
+    name: Build Windows Release
+    needs: sync
+    if: needs.sync.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: test
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up MSYS2 (UCRT64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            zip
+            unzip
+            curl
+            tar
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-sdl3
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-vulkan-loader
+            mingw-w64-ucrt-x86_64-shaderc
+            mingw-w64-ucrt-x86_64-spirv-tools
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-vulkan-memory-allocator
+            mingw-w64-ucrt-x86_64-nasm
+
+      - name: Cache LGPL FFmpeg and zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/deps-win
+            build/zig
+            build/zig-slim
+          key: sw-deps-${{ runner.os }}-${{ hashFiles('tools/build_deps_windows.sh','tools/fetch_zig.sh','tools/zig_slim.sh') }}
+
+      - name: Build LGPL FFmpeg (make deps-windows)
+        shell: msys2 {0}
+        run: make deps-windows
+
+      - name: Freeze the game-code generator (make gen-helper)
+        shell: msys2 {0}
+        run: make gen-helper GEN_PY="$(cygpath -u "$pythonLocation")/python.exe"
+
+      - name: Fetch zig (tools/fetch_zig.sh)
+        shell: msys2 {0}
+        run: bash tools/fetch_zig.sh
+
+      - name: Build and package (make dist)
+        shell: msys2 {0}
+        run: make dist
+
+      - name: List the package
+        shell: msys2 {0}
+        run: ls -lh build/dist/
+
+      - name: Upload the Windows zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: SavageWind-windows-${{ github.run_number }}
+          path: build/dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Package minimal binary
+        shell: msys2 {0}
+        run: |
+          mkdir -p build/dist-min
+          cp "build/dist/Savage Wind/savagewind.exe" build/dist-min/
+          ls -lh build/dist-min/
+
+      - name: Upload minimal exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: savagewind-exe-${{ github.run_number }}
+          path: build/dist-min/savagewind.exe
+          if-no-files-found: error
+          retention-days: 30
