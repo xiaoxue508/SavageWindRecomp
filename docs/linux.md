@@ -20,7 +20,8 @@ screen's art.
 Everything the app writes lives in `~/.local/share/savagewind` (`$XDG_DATA_HOME/savagewind`): game files (`extracted/`),
 saves, settings (`savagewind.ini`), shader caches, imported fonts. Started without a terminal the log is
 `~/.local/share/savagewind/savagewind.log` (from a terminal it prints there instead). `SAVAGEWIND_DATA_ROOT=<dir>` uses
-another folder.
+another folder. See [Moving the data folder](data-folder.md) for copying existing data and setting up a launch
+wrapper, including on Steam Deck.
 
 Controllers work as on the other systems (SDL3's gamepad support, bundled): Xbox, PlayStation (DualShock 4,
 DualSense), Switch Pro / Joy-Con, 8BitDo and other pads through the kernel's drivers, plugged in or paired while the

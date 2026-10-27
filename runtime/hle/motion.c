@@ -94,6 +94,23 @@ static void euler_of(Mat m, double *yaw, double *pitch, double *roll) {
 
 static double wrap(double a) { return a - 2 * PI * floor((a + PI) / (2 * PI)); }  // to -pi..pi
 
+// The same orientation has two such triples: (yaw, pitch, roll) and (yaw + pi, +-pi - pitch, roll + pi). euler_of
+// keeps the pitch within +-90 degrees, so tilting the controller back past vertical turned yaw and roll by half a turn
+// at once (#164). This one takes the triple whose roll is nearest the last one: the pitch goes on past 90 degrees.
+static void euler_near(Mat m, double last_roll, double *yaw, double *pitch, double *roll) {
+    euler_of(m, yaw, pitch, roll);
+    double roll2 = wrap(*roll + PI);
+    if (fabs(wrap(roll2 - last_roll)) < fabs(wrap(*roll - last_roll))) {
+        *yaw = wrap(*yaw + PI);
+        *pitch = (*pitch >= 0 ? PI : -PI) - *pitch;
+        *roll = roll2;
+    }
+}
+
+// Pointing nearly straight up or down (within 10 degrees): yaw and roll mean little there and swing with the
+// sensors' noise
+static bool steep(double pitch) { return fabs(cos(pitch)) < 0.1736; }
+
 // ---- the source orientation (main thread writes, the game's controller thread reads)
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct {
@@ -315,7 +332,7 @@ static void update(uint64_t now) {
     if (!s.init) {  // (first call: 16 samples of the controller at rest)
         Mat m;
         s.src = source(0, m);
-        euler_of(m, &s.src_yaw, &s.pitch, &s.roll);
+        euler_near(m, 0, &s.src_yaw, &s.pitch, &s.roll);
         s.yaw = 0, s.pitch = game_pitch(s.pitch);
         euler_mat(s.yaw, s.pitch, s.roll, s.m);
         for (int i = 0; i < NSAMPLES; i++) {
@@ -337,12 +354,15 @@ static void update(uint64_t now) {
     Mat src;
     int kind = source(dt, src);
     double yaw, pitch, roll;
-    euler_of(src, &yaw, &pitch, &roll);
-    // (switching between sources, or pointing nearly straight up or down where yaw means little: no turn)
-    double turn = kind == s.src && fabs(pitch) < 80 * PI / 180 ? wrap(yaw - s.src_yaw) : 0;
-    s.src = kind, s.src_yaw = yaw;
+    euler_near(src, s.roll, &yaw, &pitch, &roll);
+    // (switching between sources: no turn. Pointing nearly straight up or down: yaw and roll hold still, and the turn
+    // made meanwhile counts once the controller comes back from there.)
+    bool hold = kind == s.src && steep(pitch);
+    double turn = kind == s.src && !hold ? wrap(yaw - s.src_yaw) : 0;
+    if (!hold) s.src_yaw = yaw;
+    s.src = kind;
     double yaw1 = s.yaw + game_turn(turn), pitch1 = game_pitch(pitch);
-    double droll = wrap(roll - s.roll);
+    double droll = hold ? 0 : wrap(roll - s.roll);
     const double *lin = kind == 1 ? g.lin : zero;
     for (uint64_t j = 1; j <= n; j++) {  // (in between: the way there in equal steps)
         double f = (double)j / (double)n;

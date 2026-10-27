@@ -187,7 +187,11 @@ bool bind_capture_event(const SDL_Event *e) {
         cap_dev = -1;
         assign(dev, cap_slot, e->key.scancode);
         return true;
-    case SDL_EVENT_KEY_UP: case SDL_EVENT_TEXT_INPUT:
+    // Keep host held-state current even while capturing. Swallowing the release of the confirm key / button left
+    // it down in input.c, so ending a capture pressed confirm again and reopened the binding row (#175).
+    case SDL_EVENT_KEY_UP:
+        return false;
+    case SDL_EVENT_TEXT_INPUT:
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:  // a keyboard binding can be a mouse button (a controller capture ignores it)
         if (dev != BIND_DEV_KEY || e->button.button < SDL_BUTTON_LEFT || e->button.button > SDL_BUTTON_X2) return true;
@@ -195,7 +199,7 @@ bool bind_capture_event(const SDL_Event *e) {
         assign(dev, cap_slot, BIND_MOUSE + e->button.button);
         return true;
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        return true;
+        return false;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
         // Home / Guide opens the menu; a keyboard capture ignores the controller (it times out, or Esc)
         if (dev != BIND_DEV_PAD || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE || e->gbutton.button >= SDL_GAMEPAD_BUTTON_COUNT) return true;
@@ -203,8 +207,10 @@ bool bind_capture_event(const SDL_Event *e) {
         assign(dev, cap_slot, e->gbutton.button);
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_UP:
-        return true;
+        return false;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        if ((e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
+            e->gaxis.value <= 16000) return false;  // a trigger may also have been bound to confirm
         if (dev == BIND_DEV_PAD && e->gaxis.value > 16000 &&
             (e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) {
             cap_dev = -1;

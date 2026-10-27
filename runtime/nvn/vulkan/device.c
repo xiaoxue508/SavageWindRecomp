@@ -340,6 +340,31 @@ static void create_device(void) {
     LOG("[vk] attachment feedback loops %s\n", gcn_off ? win_legacy ? "off (target copies)" : "off on this GCN chip (target copies)"
                                                : !g_vk.feedback_loop ? "off (target copies)"
                                                : g_vk.feedback_layout ? "on (feedback loop layout)" : "on");
+    // What the driver has of the features asked for below: only those are asked for (a driver refuses the device for
+    // one it lacks, VK_ERROR_FEATURE_NOT_PRESENT: Turnip on an Adreno 830, #207), and each one missing is logged
+    VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
+    VkPhysicalDeviceCustomBorderColorFeaturesEXT cbc_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = g_vk.divisor ? &div_have : NULL};
+    VkPhysicalDeviceFaultFeaturesEXT ff_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
+                                                .pNext = g_vk.custom_border ? (void *)&cbc_have
+                                                         : g_vk.divisor ? (void *)&div_have : NULL};
+    VkPhysicalDeviceVulkan13Features f13_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                                 .pNext = fault ? &ff_have : ff_have.pNext};
+    VkPhysicalDeviceVulkan12Features f12_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13_have};
+    VkPhysicalDeviceVulkan11Features f11_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &f12_have};
+    VkPhysicalDeviceFeatures2 have2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11_have};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &have2);
+#define WANT(have, name) (have.name ? VK_TRUE : (LOG("[vk] warning: the driver lacks " #name "\n"), VK_FALSE))
+    if (fault && !ff_have.deviceFault) fault = g_fault_ext = false;
+    if (g_vk.custom_border && !(cbc_have.customBorderColors && cbc_have.customBorderColorWithoutFormat)) {
+        LOG("[vk] custom border colors without a format not supported: standard border colors\n");
+        g_vk.custom_border = false;
+    }
+    if (g_vk.divisor && !div_have.vertexAttributeInstanceRateDivisor) {
+        LOG("[vk] vertex attribute divisors not supported\n");
+        g_vk.divisor = false;
+    }
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
         .vertexAttributeInstanceRateDivisor = VK_TRUE, .vertexAttributeInstanceRateZeroDivisor = VK_FALSE};
@@ -350,17 +375,24 @@ static void create_device(void) {
                                                      .maintenance5 = VK_TRUE,
                                                      .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : NULL};
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                            .dynamicRendering = VK_TRUE, .synchronization2 = VK_TRUE,
-                                            .shaderDemoteToHelperInvocation = VK_TRUE, .shaderTerminateInvocation = VK_TRUE,
-                                            .maintenance4 = VK_TRUE, .pipelineCreationCacheControl = g_vk.gpl,
+                                            .dynamicRendering = WANT(f13_have, dynamicRendering),
+                                            .synchronization2 = WANT(f13_have, synchronization2),
+                                            .shaderDemoteToHelperInvocation = WANT(f13_have, shaderDemoteToHelperInvocation),
+                                            .shaderTerminateInvocation = WANT(f13_have, shaderTerminateInvocation),
+                                            .maintenance4 = WANT(f13_have, maintenance4),
+                                            .pipelineCreationCacheControl = g_vk.gpl && f13_have.pipelineCreationCacheControl,
                                             .pNext = m5 ? (void *)&m5_on : g_vk.custom_border ? (void *)&cbc
                                                                          : g_vk.divisor ? (void *)&div : NULL};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .timelineSemaphore = VK_TRUE, .shaderInt8 = VK_TRUE, .samplerMirrorClampToEdge = VK_TRUE,
-                                            .uniformAndStorageBuffer8BitAccess = VK_TRUE, .storageBuffer8BitAccess = VK_TRUE,
-                                            .scalarBlockLayout = VK_TRUE, .pNext = &f13};
+                                            .timelineSemaphore = WANT(f12_have, timelineSemaphore),
+                                            .shaderInt8 = WANT(f12_have, shaderInt8),
+                                            .samplerMirrorClampToEdge = WANT(f12_have, samplerMirrorClampToEdge),
+                                            .uniformAndStorageBuffer8BitAccess = WANT(f12_have, uniformAndStorageBuffer8BitAccess),
+                                            .storageBuffer8BitAccess = WANT(f12_have, storageBuffer8BitAccess),
+                                            .scalarBlockLayout = WANT(f12_have, scalarBlockLayout), .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-                                            .storageBuffer16BitAccess = VK_TRUE, .pNext = &f12};
+                                            .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess), .pNext = &f12};
+#undef WANT
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
                                            .pNext = &f11};
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT,

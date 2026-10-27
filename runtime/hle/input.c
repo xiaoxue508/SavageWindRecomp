@@ -17,6 +17,7 @@
 #include "../settings.h"
 #include "../input_bind.h"
 #include "../motion.h"
+#include "../vibration.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -257,6 +258,7 @@ static void mouse_stick(int32_t *x, int32_t *y) {
 extern bool menu_cursor_free(void);     // runtime/ui/menu.mm: Esc freed the cursor (a click in the window holds it)
 static bool win_focused = true;         // (main thread: window events and input_mouse_update)
 void input_mouse_update(SDL_Window *w) {
+    vibration_update(pad, win_focused && !host_test);
     static bool cur;
     bool want = w && win_focused && g_settings.mouse_camera && !menu_input_captured() && !menu_cursor_free() &&
                 !getenv("SAVAGEWIND_INPUT") && !getenv("SAVAGEWIND_HOST_INPUT");
@@ -388,6 +390,7 @@ void input_handle_event(const SDL_Event *e) {
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
         if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
+            vibration_update(pad, false);
             SDL_CloseGamepad(pad);
             pad = NULL;
             note_family();
@@ -405,6 +408,8 @@ void input_handle_event(const SDL_Event *e) {
         recompute_pad();
         break;
     }
+    // Sensor / axis events may arrive faster than the window loop's 16 ms idle timeout.
+    vibration_update(pad, win_focused && !host_test);
 }
 
 // Scripted input for testing: SAVAGEWIND_INPUT="frame:BUTTON:frames,..." (BUTTON = A,B,X,Y,L,R,ZL,ZR,PLUS,
@@ -740,7 +745,7 @@ HLE_FUNC("_ZN2nn3hid15GetNpadStyleSetERKj", hid_style_set) {
 HLE_FUNC("_ZN2nn3hid27BindNpadStyleSetUpdateEventERKjPNS_2os15SystemEventTypeENS3_14EventClearModeE", hid_bind_style_event) {
     uint32_t w, r;
     KEvent *ev = kernel_create_event_pair(&w, &r);
-    pthread_mutex_lock(&g_klock);
+    klock();
     kernel_signal(ev);
     pthread_mutex_unlock(&g_klock);
     uint64_t clear_mode = c->x[2];
@@ -752,18 +757,18 @@ HLE_FUNC("_ZN2nn3hid27BindNpadStyleSetUpdateEventERKjPNS_2os15SystemEventTypeENS
     LOG("[input] style set update event bound\n");
 }
 
-// Vibration devices: accepted but inert (the SDK's vibration node graph stays recompiled).
+// The SDK's vibration node graph stays recompiled; its mixed output reaches services/hid_set.c.
 HLE_FUNC("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", hid_init_vibration) { (void)c; }
 HLE_FUNC("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", hid_vibration_handles) {
     uint32_t *out = (uint32_t *)(uintptr_t)c->x[0];
     int n = (int)c->x[1] < 2 ? (int)c->x[1] : 2;
     uint32_t id = *(uint32_t *)(uintptr_t)c->x[2];
-    for (int i = 0; i < n; i++) out[i] = (id & 0xFF) << 8 | (uint32_t)i | 0x03000000u;  // type, player, position
+    for (int i = 0; i < n; i++) out[i] = 3u | (id & 0xFF) << 8 | (uint32_t)i << 16;  // style, player, device, padding
     c->x[0] = (uint64_t)n;
 }
 HLE_FUNC("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", hid_vibration_info) {
     uint32_t *info = (uint32_t *)(uintptr_t)c->x[0];
     uint32_t h = *(uint32_t *)(uintptr_t)c->x[1];
     info[0] = 1;        // VibrationDeviceType_LinearResonantActuator
-    info[1] = h & 1;    // position: left / right
+    info[1] = 1 + ((h >> 16) & 1);  // position: left = 1, right = 2
 }

@@ -172,7 +172,7 @@ $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 	@mkdir -p $(dir $@)
 	$(CXX) -O2 -g -std=c++17 -w -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/sdk/include/FidelityFX/gpu $(DEPINC) -c $< -o $@
 $(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS += -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv
-$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h
+$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/ffx_compat.h
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 
@@ -375,3 +375,21 @@ build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime
 
 build/test_romfs: tools/test_romfs.c runtime/romfs_build.c runtime/romfs_image.c runtime/romfs_build.h runtime/romfs_image.h
 	clang -O1 -Iruntime -o $@ tools/test_romfs.c runtime/romfs_build.c runtime/romfs_image.c -lpthread
+
+$(B)/test_bind_capture: tools/test_bind_capture.c runtime/hle/bindings.c runtime/input_bind.h
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_bind_capture.c runtime/hle/bindings.c -lSDL3
+
+test-bind-capture: $(B)/test_bind_capture
+	$(B)/test_bind_capture
+
+.PHONY: test-bind-capture
+
+$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/services/hid_set.c
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
+
+test-vibration: $(B)/test_vibration
+	$(B)/test_vibration
+
+.PHONY: test-vibration

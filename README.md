@@ -74,6 +74,8 @@ Coming from Alpha 2: extract Alpha 3 to a new folder and set the game files up a
 code has to be built again); copy your `save` folder over to keep your progress. What's new is in
 [CHANGELOG.md](CHANGELOG.md).
 
+To keep game files, saves and caches on another drive, see [Moving the data folder](docs/data-folder.md).
+
 The setup and configuration screens show Savage Wind's own art. To see a picture of your own there instead, put it
 next to `savagewind.exe` (on Linux, in the data folder) as `splash.jpg` or `splash.png`; it's only read from your folder and never part of
 Savage Wind.
@@ -81,6 +83,22 @@ Savage Wind.
 Needs Windows 10 or later, a CPU with SSE4.2 (2008 or newer), a GPU with Vulkan 1.3 and about 20 GB of free disk
 space. AVX2 isn't required: on a CPU without AVX2 / FMA the setup builds the game code in a compatible mode, which runs
 slower.
+
+## Where are my saves?
+
+Saves are in the `save` folder inside Savage Wind's data folder:
+
+| Platform | Default save location |
+| --- | --- |
+| Windows | `save\` next to `savagewind.exe` |
+| Linux / Steam Deck | `~/.local/share/savagewind/save/`, or `$XDG_DATA_HOME/savagewind/save/` if `XDG_DATA_HOME` is set to an absolute path |
+
+If you set `SAVAGEWIND_DATA_ROOT`, look for `save` inside that folder instead. Source builds started from a folder
+containing `extracted/` use that starting folder as the data folder. The startup log's `[paths] data: ...` line shows
+the data folder actually in use. `SAVAGEWIND_SAVE_DIR`, when set for a test run, overrides the save folder separately.
+
+To back up your progress or move it to another Savage Wind installation, close the game and copy the **whole
+`save` folder**, including `save_0` and its contents. Keep a backup of the destination's saves before replacing them.
 
 ## What you need
 

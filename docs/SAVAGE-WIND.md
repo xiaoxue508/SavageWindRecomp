@@ -660,6 +660,12 @@ Pendiente:
        vídeo (`movie.c`: decodificador de vídeo arrancado): las cinemáticas prerrenderizadas (`Movie/Demo*.webm`)
        son de 30 FPS.
      - La lógica 2↔3 del juego queda con máximo 2 (`SAVAGEWIND_MAX_INTERVAL` vale 2 por defecto).
+     - Pasos por actualización sin delta (#144): en su caída una flecha suma su gravedad (ArrowGravity, el vector
+       en +0x104 del estado de su vuelo) una vez por actualización (1.9.0 0x70005ee668): por encima de 30 FPS caía
+       2 o 4 veces más rápido por segundo y llegaba más corto. El parche `arrow_fall_gravity` multiplica su parte Y
+       por la razón del frame (`rt_arrow_gravity`, 1 a 30 FPS, sin la cámara lenta, como en la consola). Prueba:
+       `SAVAGEWIND_LOG_ARROW=1` y `SAVAGEWIND_SCRIPT_CLOCK=1` disparando con ZR a 30, 60 y 120: la velocidad en el
+       tiempo es la misma.
      - Vsync: Vídeo > Sincronización vertical (ver "VSync y VRR" abajo). Por defecto Rápida (MAILBOX), sin tearing;
        cada refresco muestra la imagen más nueva. Una frecuencia que divide la del monitor (60 en 60/120/240 Hz) es
        la más fluida; una que no (60 o 90 en 144 Hz) alterna 2 y 3 refrescos por imagen; por encima de la del
@@ -1019,9 +1025,10 @@ Pendiente:
        la consola no se ven) no se dibuja (`hud_clip`). Los scissors parciales del target final se comprimen igual
        (`scissor_rect`: la máscara del minimapa).
      - Menús: con el estado de pausa 2 (páginas del menú de pausa y mapa, `framepace_menu_ui`) se presenta el centro
-       16:9 de la imagen con bandas (`OutScale.crop`), igual que en una pantalla 16:9; el menú rápido (estado 4) y la
-       pantalla de carga llenan la ventana. La pantalla de título y sus menús (`framepace_title_ui`, pantallas 1 y
-       0x38) no se ensanchan.
+       16:9 de la imagen con bandas (`OutScale.crop`), igual que en una pantalla 16:9; el menú rápido (estado 4) llena
+       la ventana. La pantalla de título y sus menús (`framepace_title_ui`, pantallas 1 y 0x38) y la pantalla de carga
+       (`framepace_loading_ui`, pantalla 0x55, hasta que termina su fundido al juego; #98: ensanchada, el consejo iba a
+       los bordes de la ventana y el logo quedaba en el centro 16:9) no se ensanchan: 16:9 con bandas.
      - El FOV escala solo la cámara del mundo (far 25000; HUD, modelos de menú y título tienen 10000), nunca en eventos
        (`framepace_in_event`), con transición de 1/4 s. `SAVAGEWIND_LOG_PROJ=1` lista cada tipo de vista y los cambios
        de FOV; `SAVAGEWIND_NO_HUD_FIX=1` quita `hud_patch`. Pruebas: `SAVAGEWIND_WINDOW_SHOT_AT=<frame>,...` guarda la

@@ -72,8 +72,9 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     double shape = wide_test > 0 ? wide_test : (dw / dh) / (16.0 / 9.0);
     // Wider windows only (a narrower one, 16:10 or 4:3, keeps the 16:9 picture with bars above and below: the HUD's
     // texture generation doesn't follow a taller view). The start screen and its menus, a 16:9 layout over 16:9
-    // pictures with no world to show more of, keep it too.
-    bool reshape = reshape_allowed && shape > 1.005 && !framepace_title_ui();
+    // pictures with no world to show more of, keep it too, and so does the loading screen (#98: widened, its tip went
+    // to the window's edges and its logo stayed in the 16:9 middle).
+    bool reshape = reshape_allowed && shape > 1.005 && !framepace_title_ui() && !framepace_loading_ui();
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)
 #ifdef __APPLE__

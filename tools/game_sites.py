@@ -104,6 +104,10 @@ SITES = [
          'f900015f/ffc003ff a9002d28 a8c17bfd d65f03c0', 2),
     Site('title_version_format', 'ref', '90000001/9f00001f 91000021/ffc003ff d103c3a0 94000000/fc000000 '
          'f9400294/ffffffdf b940da88 35000008/ff00001f 90000001/9f00001f', 1),
+    # BOTW's streaming Yaz0 decoder: its entry and its return (tools/patches.py; runtime/hle/yaz0.c)
+    Site('yaz0_stream', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 39406808 2a0203f4 aa0103f5 aa0003f3', 0),
+    Site('yaz0_stream_ret', 'code', 'd65f03c0 7100869f 54000003/ff00001f b9400e68 35000008/ff00001f 12800000 '
+         '14000000/fc000000 12800020', 0),
     # frame rate (runtime/hle/framepace.c, runtime/nvn/objects.c)
     Site('frame_wait', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91078014 aa0003f3 aa1403e0 94000000/fc000000', 0),
     Site('frame_loop_interval_ret', 'code', 'f9400268 aa1303e0 f9409908 d63f0100 14000000/fc000000 1100052a '
@@ -124,6 +128,8 @@ SITES = [
     # tan(fovy / 2) (y) and of it with the aspect ratio (x)
     Site('persp_unproject_y', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 6),
     Site('persp_unproject_x', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 18),
+    # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
+    Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
     Site('gui_speed', 'code', 'bd0b2100 94000000/fc000000 f9400260 94000000/fc000000 52800020 94000000/fc000000 '
          'a9414ff4 a8c27bfd', 0),
     Site('pause_state', 'ref', '90000013/9f00001f b9400268/ffc003ff 35000008/ff00001f 90000008/9f00001f '
@@ -169,6 +175,7 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('yaz0_stream', 'yaz0_stream_ret'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
 ]
@@ -208,6 +215,7 @@ KNOWN = {
         'frame_loop_interval_ret': 0x7001012a34,
         'vfr_ratio': 0x70014092f4,
         'gui_speed': 0x700116d0e8,
+        'arrow_fall_gravity': 0x70004db204,
         'persp_matrix': 0x7000da1400,
         'persp_matrix_offset': 0x7000da1408,
         'persp_unproject_y': 0x7000da14d8,
@@ -226,6 +234,8 @@ KNOWN = {
         'main_end': 0x7001d37000,
     },
     '1.9.0': {
+        'yaz0_stream': 0x700131d674,
+        'yaz0_stream_ret': 0x700131d7e8,
         'opt_create_rows': 0x7000e2f0a8,
         'opt_row_init_flag_type': 0x7000e2f538,
         'gdt_flag_type': 0x7001136dc8,
@@ -258,6 +268,7 @@ KNOWN = {
         'frame_loop_interval_ret': 0x70011267c4,
         'vfr_ratio': 0x700151d494,
         'gui_speed': 0x7001280ee8,
+        'arrow_fall_gravity': 0x70005ee734,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
         'persp_unproject_y': 0x7000eb4b28,

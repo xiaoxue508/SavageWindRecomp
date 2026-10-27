@@ -222,6 +222,19 @@ def _vfr_ratio(gen, a):
             f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio) */')
 
 
+# Arrows (#144): once in their fall, an arrow's velocity is its last direction x its speed plus a gravity vector
+# (0, ArrowGravity, 0), added once per update with no time step (1.9.0 0x70005ee668; the straight part before it scales
+# by the delta frame). Above 30 fps it fell 2 or 4 times as fast per second and landed short. The load of its Y part
+# (the only one the game sets) takes the frame's length in console frames as a factor (runtime/hle/framepace.c
+# rt_arrow_gravity: 1 at 30 fps, slow motion left out as on the console).
+
+def _arrow_gravity(gen, a):
+    assert _word(gen, a) == 0xbd410a81, hex(_word(gen, a))  # ldr s1, [x20, #0x108]
+    return ('{ extern float rt_arrow_gravity(uint64_t, float); union { uint32_t u; float f; } g = { .u = (uint32_t)LD32(c->x[20] + 0x108) }; '
+            'g.f = rt_arrow_gravity(c->x[20], g.f); c->v[1] = g.u; }'
+            f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
+
+
 # The menus' speed (runtime/hle/framepace.c rt_gui_speed): once a frame the game stores its integer interval x 0.5 as
 # the GUI speed (the float at +0xb20 of a UI object; 1.8.2 0x700116d0e8): 1 at 30 fps, 0.5 at 60 and never lower, so
 # the menus' cursor and animations ran faster above 60 fps. The runtime gives the frame's real length instead, as Cemu's
@@ -357,6 +370,21 @@ def _cam_reverse(axis):
 
 
 # tools/game_sites.py site -> its patch
+# BOTW's streaming Yaz0 decoder (1.9.0 0x700131d674; x0 its state, x1/w2 the input chunk): in native code
+# (runtime/hle/yaz0.c rt_yaz0, which declines the first call of a stream, the one that reads its header). Its return
+# instruction checks the native result against the game's code with SAVAGEWIND_YAZ0=2.
+def _yaz0_stream(gen, a):
+    assert _word(gen, a) == 0xa9bd7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x30]!
+    return ('{ extern int rt_yaz0(Cpu *); if (rt_yaz0(c)) return; '
+            'uint64_t ea = c->sp - 0x30; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+            f'  /* {a:#x}: stp x29, x30, [sp, #-0x30]! (Yaz0 stream decoder) */')
+
+
+def _yaz0_stream_ret(gen, a):
+    assert _word(gen, a) == 0xd65f03c0, hex(_word(gen, a))  # ret
+    return '{ extern void rt_yaz0_done(Cpu *); rt_yaz0_done(c); return; }' + f'  /* {a:#x}: ret (Yaz0 stream decoder) */'
+
+
 PATCHES = {
     'pause_options_update': _pause_option_state,
     'opt_create_rows': _opt_rows,
@@ -374,8 +402,11 @@ PATCHES = {
     'title_button': _title_event,
     'msg_lookup': _title_msg,
     'frame_wait': _frame_wait,
+    'yaz0_stream': _yaz0_stream,
+    'yaz0_stream_ret': _yaz0_stream_ret,
     'vfr_ratio': _vfr_ratio,
     'gui_speed': _gui_speed,
+    'arrow_fall_gravity': _arrow_gravity,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
     'persp_unproject_y': _persp_unproject_y,

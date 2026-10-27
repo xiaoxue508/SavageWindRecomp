@@ -98,6 +98,9 @@ static bool screen_up(uint32_t id) {
 // (screens: 1 the start screen, 0x38 its load and confirmation menus)
 bool framepace_title_ui(void) { return screen_up(1) || screen_up(0x38); }
 
+// (screen 0x55: the loading screen with its tip, up from a load's start until its fade into the game is over)
+bool framepace_loading_ui(void) { return screen_up(0x55); }
+
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
 bool framepace_paused(void) { return in_menu(); }
@@ -207,6 +210,22 @@ float rt_gui_speed(float game) {
 static void clock_probe(uint64_t vfr);
 static void log_screens(void);
 
+// The frame's length in console frames (VFR's interval ratio as set below: 1 at 30 fps, 0.5 at 60), for game code
+// patched to scale a per-update step it doesn't scale itself
+static volatile float g_frame_ratio = 1;
+
+// An arrow's gravity in its fall, added once per update (tools/patches.py _arrow_gravity, #144): per console frame.
+// SAVAGEWIND_LOG_ARROW=1 logs each falling arrow's update (time, velocity before it).
+float rt_arrow_gravity(uint64_t arrow, float g) {
+    static int log = -1;
+    if (log < 0) log = env_int("SAVAGEWIND_LOG_ARROW", 0);
+    if (log > 0)
+        LOG("[arrow] %.3f s %#llx ratio %.3f gravity %.2f velocity %.2f %.2f %.2f\n", plat_now_ns() / 1e9,
+            (unsigned long long)arrow, g_frame_ratio, g, VF(float, arrow, 0x110), VF(float, arrow, 0x114),
+            VF(float, arrow, 0x118));
+    return g * g_frame_ratio;
+}
+
 void rt_vfr_update(uint64_t vfr) {
     extern bool nvn_timeline(void);
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
@@ -216,6 +235,7 @@ void rt_vfr_update(uint64_t vfr) {
     log_screens();
     extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
     if (!framepace_on()) {
+        g_frame_ratio = VF(float, vfr, VFR_RATIO);
         input_cam_frame(VF(float, vfr, VFR_RATIO));
         return;
     }
@@ -275,6 +295,7 @@ void rt_vfr_update(uint64_t vfr) {
     else if (iv == 3 && slow < 1.15) iv = 2;
     VF(float, vfr, VFR_RATIO) = ratio;
     VF(float, vfr, VFR_NEW_RATIO) = ratio;
+    if (!paused) g_frame_ratio = ratio;
     VF(uint32_t, vfr, VFR_INTERVAL) = iv;
     VF(uint8_t, vfr, VFR_CHANGED) = last_iv && iv != last_iv;
     last_iv = iv;
