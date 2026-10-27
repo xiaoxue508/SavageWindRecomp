@@ -5156,6 +5156,12 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             LOG(" | bf%d %x %x %x %x %x %x", i, st.blend[i][1], st.blend[i][2], st.blend[i][3], st.blend[i][4], st.blend[i][5], st.blend[i][6]);
     LOG(" | fs out %#x | poly3 %#x offset %g %g %g | clamp %d\n", pr->fi->out_mask, st.poly[3], st.poly_offset[0], st.poly_offset[1],
         st.poly_offset[2], st.depth_clamp);
+    for (int i = 0; i < 32 && i < st.nattrib; i++)  // vertex attributes: guest format, stream (stride, divisor), offset
+        if (pr->vi->attr_mask & (1u << i)) {
+            uint32_t a = st.attrib[i], s = (a >> 8) & 0x1F;
+            LOG("[draw]   attr%d fmt %#x stream %u (stride %u div %u) off %u\n", i, a & 0xFF, s,
+                s < (uint32_t)st.nstream ? st.stream[s][0] : 0, s < (uint32_t)st.nstream ? st.stream[s][1] : 0, a >> 13);
+        }
     for (int i = 0; i < st.rt.ncolor; i++)  // target views (layer / level selections)
         if (st.rt.color[i] && st.rt.has_cview[i])
             LOG("[draw]   rt%d view: set %#x levels %u+%u layers %u+%u (texture target %u depth %u)\n", i, st.rt.cview[i].setmask,
@@ -5190,6 +5196,13 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             for (int k = 0; k < 128 && k * 4 < (int)st.ubuf[1][c].size; k++) LOG(" %.6g", u[k]);
             LOG("\n");
         }
+    }
+    for (int i = 0; i < pr->vi->ntex && i < 64; i++) {  // vertex textures (displacement, vertex animation)
+        NvnTexture *t = shader_texture_object(0, &pr->vi->tex[i]);
+        const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
+        if (!t) { LOG("[draw]   vtex%d: none\n", i); continue; }
+        LOG("[draw]   vtex%d: %ux%u f%#x lv %u -> %ux%u addr %llx\n", i, t->width, t->height, t->format, b ? b->levels : 0,
+            b ? b->width : 0, b ? b->height : 0, (unsigned long long)t->addr);
     }
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {  // fragment textures: guest size / format, allocation, scale
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);

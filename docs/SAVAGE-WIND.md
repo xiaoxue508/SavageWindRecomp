@@ -74,6 +74,13 @@ savage_wind/extracted/
   romfs/   contenido completo de la romfs (base + actualización ya fusionadas)
 ```
 
+BOTW 1.8.2 y 1.9.0 traen solo `subsdk0`. Otro `subsdk1`..`subsdk9` en una ExeFS de una versión conocida es de un mod o
+de un cargador de mods copiado ahí (#165: el generador fallaba en `subsdk3`): `tools/layout.py` (`GAME_SUBSDKS`) lo
+deja fuera del código y `runtime/loader.c` lo salta con un aviso en el log. Con una versión desconocida un subsdk sin
+código sigue siendo un error ("build it again"). **Revisar al implementar el DLC o mods con código:** el DLC de BOTW es
+contenido de datos (AddOnContent, sin código), pero un mod con código (exlaunch / skyline) sí trae un subsdk; si algún
+día se soportan, `GAME_SUBSDKS` y el salto del loader tienen que dejarlos pasar.
+
 La versión principal y la única con soporte es la 1.9.0 (2026-02-17, v1114112: texto en tailandés en Switch 2,
 SDK 21.4.1), la última: un dump legal hecho hoy la trae. La 1.8.2 (versión de título v1048576) se sigue instalando y
 funciona, pero sin soporte: un issue de 1.8.2 se arregla solo si también pasa en la 1.9.0 (decisión del usuario,

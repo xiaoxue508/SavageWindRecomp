@@ -90,3 +90,5 @@ uint64_t guest_sym(const char *name);     // cached loader_find_symbol, fatal if
 void *hle_alloc(uint64_t size);           // zeroed guest-visible memory (never freed)
 extern const char *g_romfs_dir;
 extern uint64_t g_program_id;     // from main.npdm's ACI0 (runtime/main.c); 0 before boot
+uint64_t fs_aoc_base_id(void);    // add-on content: the base id, and whether index's image is set up (services/fs.c)
+bool fs_aoc_present(int index);

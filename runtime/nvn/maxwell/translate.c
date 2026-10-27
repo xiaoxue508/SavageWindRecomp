@@ -1450,6 +1450,20 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             if (wcc3) sp(&c->body, "      cc = uint(sum >> 32) & 1u;\n");
             if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = uint(sum);\n", d); }
             sp(&c->body, "    }\n");
+        } else if (OPM(0x5cc0000000000000ull, 0xfff0000000000000ull) && bits(w, 31, 8)) {
+            // register form with a shift or half selects: .RS / .LS (bits 37-38) shift the first two operands' sum
+            // 16 bits right / left before the third is added; bits 35-36, 33-34, 31-32 pick a / b / c's low or high
+            // half (1 low, 2 high). The compiler's division by a constant (x * 0xcccccccd's high word, then >> 2)
+            // ends in IADD3.RS: without the shift the quotient was wrong, and BOTW's beach shell sprites read their
+            // size from another row (#147).
+            static const char *const half[4] = {"", " & 0xFFFFu", " >> 16", ""};
+            int sh = (int)bits(w, 37, 2);
+            char ra[96], rb[96], rc[96];
+            snprintf(ra, sizeof ra, "%s(%s%s)", bits(w, 51, 1) ? "-" : "", R(a), half[bits(w, 35, 2)]);  // (half, then negate)
+            snprintf(rb, sizeof rb, "%s(%s%s)", bits(w, 50, 1) ? "-" : "", B(false), half[bits(w, 33, 2)]);
+            snprintf(rc, sizeof rc, "%s(%s%s)", bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)), half[bits(w, 31, 2)]);
+            sprintf(t, "(((%s + %s)%s) + %s)", ra, rb, sh == 1 ? " >> 16u" : sh == 2 ? " << 16u" : "", rc);
+            set_reg(c, d, t);
         } else {
             sprintf(t, "(%s%s + %s%s + %s%s)", bits(w, 51, 1) ? "-" : "", R(a), bits(w, 50, 1) ? "-" : "", B(false),
                     bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)));
