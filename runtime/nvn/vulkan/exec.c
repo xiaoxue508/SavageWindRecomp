@@ -392,11 +392,22 @@ void renderer_wait_seq(uint64_t seq) {
     uint64_t s = submit_seq;
     if (seq > s) seq = s;  // not submitted yet (other thread): everything submitted so far
     if (gpu_overlap() && oneshot_seq && oneshot_seq <= seq && oneshot_seq > vk_completed_seq()) {
-        deferred_seq = 0;  // (a one-off readback in what this waits for: everything up to it, now)
+        // A one-off readback in what this waits for: its own submission now (the CPU reads this frame's pixels), and
+        // the deferred fence; this one stays deferred, so the rest of the frame stays queued. Waiting for everything
+        // up to this fence drained the GPU: ~5 ms hitches, 1 frame in 20 at Hyrule Castle, where BOTW reads ~20 small
+        // targets back every 20-200 frames, each a "one-off" here. SAVAGEWIND_ONESHOT_FULL=1: that full wait.
+        static int full = -1;
+        if (full < 0) full = getenv("SAVAGEWIND_ONESHOT_FULL") != NULL;
+        uint64_t prev = deferred_seq, need = full ? seq : oneshot_seq > prev ? oneshot_seq : prev;
+        deferred_seq = need >= seq ? 0 : seq;
         pthread_mutex_unlock(&seq_lock);
         static int nlog;
-        if (nlog < 20) { nlog++; LOG("[vk] GPU overlap: a one-off readback, wait on submission %llu not deferred\n", (unsigned long long)seq); }
-        vk_wait_seq(seq);
+        if (nlog < 20) {
+            nlog++;
+            LOG("[vk] GPU overlap: a one-off readback in submission %llu, waited for %llu of %llu\n",
+                (unsigned long long)oneshot_seq, (unsigned long long)need, (unsigned long long)seq);
+        }
+        vk_wait_seq(need);
         return;
     }
     if (gpu_overlap()) {
