@@ -235,6 +235,18 @@ def _arrow_gravity(gen, a):
             f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
 
 
+# The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
+# gives the solver round(delta frame x 6) microsteps (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at 120. With fewer
+# the solver gives way more to what is in contact with Link: holding a cucco, its body over his head held his jump
+# to a third of its height above 90 fps. The runtime gives 6 / sqrt(delta frame) on shorter steps (12 at 120).
+
+def _solver_steps(gen, a):
+    assert _word(gen, a) == 0x1e220822, hex(_word(gen, a))  # fmul s2, s1, s2
+    return ('{ extern float rt_solver_steps(float, float); union { uint32_t u; float f; } d = { .u = (uint32_t)c->v[1] }, '
+            'k = { .u = (uint32_t)c->v[2] }; k.f = rt_solver_steps(d.f, k.f); c->v[2] = k.u; }'
+            f'  /* {a:#x}: fmul s2, s1, s2 (solver microsteps: delta frame x 6) */')
+
+
 # The menus' speed (runtime/hle/framepace.c rt_gui_speed): once a frame the game stores its integer interval x 0.5 as
 # the GUI speed (the float at +0xb20 of a UI object; 1.8.2 0x700116d0e8): 1 at 30 fps, 0.5 at 60 and never lower, so
 # the menus' cursor and animations ran faster above 60 fps. The runtime gives the frame's real length instead, as Cemu's
@@ -407,6 +419,7 @@ PATCHES = {
     'vfr_ratio': _vfr_ratio,
     'gui_speed': _gui_speed,
     'arrow_fall_gravity': _arrow_gravity,
+    'phys_solver_steps': _solver_steps,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
     'persp_unproject_y': _persp_unproject_y,

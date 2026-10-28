@@ -1783,6 +1783,32 @@ presented:
             if (next) next++;
         }
     }
+    {   // (testing) SAVAGEWIND_COLOUR_AT=<frame>:<exposure>/<contrast>/<saturation>/<temperature>/<tint>/<LUT %>/<LUT>,...
+        // (ascending; the LUT as the ini names it, may be empty): Video > Colour from that frame on (A/B of one view)
+        static const char *next;
+        static int init;
+        if (!init) { init = 1; next = getenv("SAVAGEWIND_COLOUR_AT"); }
+        while (next && *next) {
+            char *end;
+            long at = strtol(next, &end, 10);
+            if ((long)total_frames < at) break;
+            Settings *s = &g_settings;
+            int k = 0, used = 0;
+            if (*end == ':' && sscanf(end + 1, "%d/%d/%d/%d/%d/%d/%n", &s->color_exposure, &s->color_contrast,
+                                      &s->color_saturation, &s->color_temperature, &s->color_tint,
+                                      &s->color_lut_strength, &used) == 6 && used) {
+                const char *l = end + 1 + used;
+                while (l[k] && l[k] != ',' && k < (int)sizeof s->color_lut - 1) k++;
+                memcpy(s->color_lut, l, (size_t)k);
+                s->color_lut[k] = 0;
+                LOG("[test] frame %llu: colour %d/%d/%d/%d/%d LUT \"%s\" %d%%\n", (unsigned long long)total_frames,
+                    s->color_exposure, s->color_contrast, s->color_saturation, s->color_temperature, s->color_tint,
+                    s->color_lut, s->color_lut_strength);
+            }
+            next = strchr(end, ',');
+            if (next) next++;
+        }
+    }
     {   // SAVAGEWIND_SHOT_AT=<frame>,<frame>,... (ascending): the game image at those frames -> build/frames/frame_N.png
         static const char *next;
         static int init;

@@ -170,6 +170,8 @@ bool rt_remove_game_file(const char *game_dir, const char *name) {
     return is_dir(p) ? plat_remove_tree(p) : remove(p) == 0;  // (plat_remove_tree doesn't follow links inside)
 }
 
+bool rt_is_link(const char *p) { return is_link(p); }
+
 bool rt_remove_game_files(const char *game_dir) {
     if (!game_dir_ok(game_dir)) {
         fprintf(stderr, "[paths] refusing to delete game files in %s (not <data root>/extracted)\n", game_dir);

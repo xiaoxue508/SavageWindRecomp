@@ -147,6 +147,11 @@ float output_view_shape(void) { return g_view_shape; }
 // turned (issue #103). What the game set is kept per projection (wide_cam), so the next build, a change of the window
 // or of the field of view, and the screen-to-camera loads (tools/patches.py _persp_unproject) start from it again
 // instead of widening twice. SAVAGEWIND_NO_WIDE_CAMERA_FIX=1: the matrix only, as before.
+// The field of view also writes fovy and the sine and cosine of its half (+0xa0 / +0xa4 / +0xa8): the game copies the
+// camera's projection with getFovy and setFovy (which makes tan from the angle), and the cascades are fitted to that
+// copy; with tan alone a band of the far ground went dark and shadows were missing at the screen's edges above 100%
+// (#162, #203). The game sets fovy again every frame, so it doesn't build up. SAVAGEWIND_NO_FOV_CAMERA_FIX=1: tan and
+// aspect only.
 static WorldProj g_world;
 static pthread_mutex_t world_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -172,6 +177,8 @@ void rt_persp(uint64_t proj, uint32_t *tan_fovy, uint32_t *aspect) {
     memcpy(nf, (const void *)(uintptr_t)(proj + 0x98), 8);
     static int wide_fix = -1;
     if (wide_fix < 0) wide_fix = getenv("SAVAGEWIND_NO_WIDE_CAMERA_FIX") == NULL;
+    static int wide_fov = -1;
+    if (wide_fov < 0) wide_fov = getenv("SAVAGEWIND_NO_FOV_CAMERA_FIX") == NULL;
     bool world = nf[1] > 10001;
     if (world) {  // (values this wrote back: the game's own instead)
         pthread_mutex_lock(&wide_cam_lock);
@@ -206,6 +213,10 @@ void rt_persp(uint64_t proj, uint32_t *tan_fovy, uint32_t *aspect) {
     if (world) output_world_proj_set(t, a, nf[0], nf[1]);
     if (world && wide_fix && (*tan_fovy != set_t || *aspect != set_a)) {  // (the world's camera: written back)
         memcpy((void *)(uintptr_t)(proj + 0xac), tan_fovy, 4), memcpy((void *)(uintptr_t)(proj + 0xb0), aspect, 4);
+        if (*tan_fovy != set_t && wide_fov) {  // fovy, sin and cos of its half too
+            float h = atanf(t), fsc[3] = {2 * h, sinf(h), cosf(h)};
+            memcpy((void *)(uintptr_t)(proj + 0xa0), fsc, 12);
+        }
         pthread_mutex_lock(&wide_cam_lock);
         unsigned k = 16;
         for (unsigned i = 0; i < 16 && k == 16; i++)

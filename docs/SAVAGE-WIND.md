@@ -591,7 +591,17 @@ Pendiente:
      dividida por el factor del modo con AMD FSR 1 (Ultra calidad 1,3, Calidad 1,5, Equilibrado 1,7, Rendimiento 2). Con FSR 1 y la escena más chica que su sitio
      en la imagen final, EASU y RCAS corren sobre la escena justo antes del draw del juego que la compone
      (`exec.c` `scene_upscale`), en el formato de la escena (A2B10G10R10, sin bandas), y ese draw muestrea el
-     resultado 1:1. Por defecto el escalador está en No (en macOS sigue MetalFX); `settings_version` 3: en un
+     resultado 1:1. La escena está en luz lineal (la composición le aplica la curva de gamma: 32 → 99, 64 → 137
+     de 255, medido en el Deck), y FSR 1 espera una imagen perceptual: EASU la lleva a gamma 2.0 (raíz) al leerla,
+     RCAS la devuelve a lineal (cuadrado) al escribir (`b.z` = 1 en sus push constants;
+     `SAVAGEWIND_SCENE_FSR_LINEAR=1`: en lineal, como antes). En lineal las diferencias chicas de sombras y hojas
+     pesaban poco al elegir dirección y al recortar a los 4 vecinos, y la gamma de la composición las sacaba como
+     manchas planas (#141). Aun así Rendimiento en una ventana de 720p-800p (escena 640x360, Steam Deck) se ve
+     "al óleo": es EASU a 2x desde tan poca imagen, igual en NVIDIA (RTX 3060) que en RADV (medido 2026-10-27:
+     misma vista, mismas entradas; los shaders del Deck dan lo mismo que una referencia en CPU, diferencia media
+     0,2 de 255); Calidad (853x480) casi no lo tiene. `SAVAGEWIND_SCENE_POST_DUMP=<frame>` (contado como
+     `SAVAGEWIND_SHOT_AT`) guarda la escena, la salida de EASU y la de RCAS de ese frame en
+     `build/frames/scene_*.png`. Por defecto el escalador está en No (en macOS sigue MetalFX); `settings_version` 3: en un
      archivo anterior "fsr1" solo escalaba la imagen final de 1080p a una ventana mayor, así que carga como No, salvo
      los de versión 1 cuya resolución interna era una parte de la pantalla (75 %, 50 %, 25 %), que siguen con FSR 1
      en el modo más cercano. Lo que faltaba para que BOTW funcionara escalado:
@@ -673,6 +683,15 @@ Pendiente:
        por la razón del frame (`rt_arrow_gravity`, 1 a 30 FPS, sin la cámara lenta, como en la consola). Prueba:
        `SAVAGEWIND_LOG_ARROW=1` y `SAVAGEWIND_SCRIPT_CLOCK=1` disparando con ZR a 30, 60 y 120: la velocidad en el
        tiempo es la misma.
+     - Micropasos del solver de Havok (#161): antes de cada paso de física el juego le da al solver
+       round(delta frame x 6) micropasos (1.9.0 0x700156f930): 6 a 30 FPS, 3 a 60, 2 a 120, siempre la misma
+       duración de micropaso. Con menos micropasos por paso el solver cede más ante lo que toca a Link: con un cuco
+       en brazos (su cuerpo justo encima de la cabeza) el salto subía 0,63 m a 30 FPS, 0,45 a 60 y 0,2-0,25 por
+       encima de 90. El parche `phys_solver_steps` da 6 / raíz(delta frame) en pasos más cortos (8,5 a 60, 12 a 120;
+       `rt_solver_steps`, `SAVAGEWIND_SOLVER_STEPS=0` deja la cuenta del juego). Con 6 por paso todavía quedaba en
+       0,56 m a ~90 FPS. Prueba (corridas ocultas en Kakariko, `SAVAGEWIND_TEST_WARP=1834.4,221.9,959.0`, coger el
+       cuco con A y saltar con X, altura de Link en PlayerInfo +0x8c): 0,634 m a 30, 0,640 a 60, 0,639 a ~85-120;
+       el salto normal sigue en 0,68.
      - Vsync: Vídeo > Sincronización vertical (ver "VSync y VRR" abajo). Por defecto Rápida (MAILBOX), sin tearing;
        cada refresco muestra la imagen más nueva. Una frecuencia que divide la del monitor (60 en 60/120/240 Hz) es
        la más fluida; una que no (60 o 90 en 144 Hz) alterna 2 y 3 refrescos por imagen; por encima de la del
@@ -1038,7 +1057,14 @@ Pendiente:
        los bordes de la ventana y el logo quedaba en el centro 16:9) no se ensanchan: 16:9 con bandas.
      - El FOV escala solo la cámara del mundo (far 25000; HUD, modelos de menú y título tienen 10000), nunca en eventos
        (`framepace_in_event`), con transición de 1/4 s. `SAVAGEWIND_LOG_PROJ=1` lista cada tipo de vista y los cambios
-       de FOV; `SAVAGEWIND_NO_HUD_FIX=1` quita `hud_patch`. Pruebas: `SAVAGEWIND_WINDOW_SHOT_AT=<frame>,...` guarda la
+       de FOV; `SAVAGEWIND_NO_HUD_FIX=1` quita `hud_patch`. Sombras del sol con FOV (2026-10-26, #162, #203, #148,
+       #168): `rt_persp` escribía de vuelta en la proyección de la cámara solo tan(fovy/2) y aspect (`+0xac`/`+0xb0`,
+       #103), pero el juego copia esa proyección a otra con getFovy (`+0xa0`, 1.8.2 `0x7100ddc818`) y setFovy, que
+       recalcula sin/cos/tan desde el ángulo: la copia (con la que se ajustan las cascadas) tenía el FOV del juego. Con
+       FOV 130 mirando abajo en la meseta, una franja del suelo lejano quedaba oscura con borde diagonal y faltaban
+       sombras en los bordes. Ahora también escribe fovy, sin y cos de su mitad (`+0xa0`/`+0xa4`/`+0xa8`); el juego
+       vuelve a poner su fovy cada frame (setFovy desde la cámara), así que no se acumula.
+       `SAVAGEWIND_NO_FOV_CAMERA_FIX=1`: solo tan y aspect, como antes. Pruebas: `SAVAGEWIND_WINDOW_SHOT_AT=<frame>,...` guarda la
        ventana tal cual se presenta (bandas y menús incluidos) en `build/frames/window_N.png`. Metal pasa `false`.
    - Overlay de rendimiento (F10: off, FPS, full; ajuste `perf_overlay`): FPS y ms del juego con gráfico, CPU (total
      y del juego), RAM, GPU (uso, temperatura, potencia, reloj, VRAM) por NVML, que trae el driver de NVIDIA
@@ -1070,6 +1096,21 @@ Pendiente:
        en la que las entradas de los archivos redirigidos que crecieron crecen lo mismo (redondeado a 32, más 32):
        3428 archivos más grandes con JPja, 242 de ellos con entrada (los diálogos `.bfstm` no tienen). La copia va
        en Yaz0 de solo literales (~593 KB por 467 KB). Si el overlay de mods trae su propia RSTB, se deja la suya.
+     - Páginas de subtítulos (2026-10-26, issue #169, análisis de Igorms27): en las cinemáticas el juego pasa de
+       página en los marcadores (AMTA `MARK`: id, nombre, muestra, largo) de la línea en su banco de voz,
+       `Voice/<idioma>/<Demo>.bars`. Los bancos no tienen audio (está en `Stream_*/`): por línea, un AMTA con DATA
+       (su largo en muestras, lo único que cambia entre idiomas), los marcadores y su nombre; cada marcador lleva los
+       idiomas de texto a los que sirve (`USen,EUen`, `EUnl`, `EUfr,USfr`, `JPja`). Con el banco entero de otro idioma
+       el texto recibía marcadores ajenos: texto pt-BR (que usa `Voice/USen`) con voces JPja mostraba 5 de las 13
+       páginas de la revelación del rey (`Demo154_1`). Ahora `bars_hybrid` (`fs.c`) deja el banco de la ruta (sus
+       marcadores) con el DATA de cada línea tomado del banco de las voces elegidas y los marcadores movidos por la
+       razón entre los dos largos; los bancos van juntos en un bloque en memoria y no cambian de tamaño, así que la
+       RSTB no crece por ellos (con JPja: 710 bancos así, 53 entradas de la RSTB crecidas en vez de 242). Los
+       `NV_Custom_*.bars`, que llevan sus sonidos dentro, se siguen redirigiendo enteros. Prueba: `TEST_WARP`
+       -811.8,268.5,1966.7 (techo del Templo del Tiempo) con `TEST_FLAGS` `FindDungeon_AllClear=1`,
+       `FindDungeon_Finish=0`, `IsPlayed_Demo154_1=0`, `Npc_King001_Disappear=0` lanza `FindDungeon`/`Demo154_0`,
+       que sigue en `Demo154_1` (antes, un tip pide Minus y luego B). Con texto pt-BR y voces JPja se ven las 13
+       páginas, a tiempo con la voz japonesa.
    - Menús traducidos (2026-10-16): la pantalla de inicio y el menú del juego siguen al idioma de texto (Auto: el
      del sistema). `tr("texto en inglés")` (`runtime/ui/i18n.mm`) busca el texto en la tabla del idioma,
      `runtime/ui/i18n/<idioma>.inc` (`T("English", "...")`; `""` deja el inglés). Los widgets de
@@ -1538,6 +1579,50 @@ frame's PSNR against each is 1.5-2.5 dB over theirs against each other, so it li
   (VSync On / FIFO, VRR, HDR10 brightness): the shots are taken from the window image before the present. Not
   measured: the added latency. The Linux build of the SDK's sources (`ffx_compat.h` has what glibc lacks) isn't
   tried yet.
+
+## Colour grading (Options > Colour)
+
+Options > Colour (the game's own Options screen; also the F1 menu's Video tab, section Colour) grades the 3D image:
+a preset, exposure (-2..+2 EV), contrast (-50..+50), saturation (-100..+100), temperature and tint (-100..+100), a LUT
+and its intensity (0-100%). ini: `colour_exposure` (EV), `colour_contrast`, `colour_saturation`,
+`colour_temperature`, `colour_tint`, `colour_lut` (`none`, `sw:<file>` shipped, `<file>` the player's),
+`colour_lut_strength` (percent). Windows and Linux (Vulkan); no page on macOS. Code: `runtime/color_grade.c` (presets,
+LUT folders and files), `exec.c` `scene_post` / `grade_lut` / `grade_wanted`, `shaders.c` `grade.frag`.
+
+**Where.** One fullscreen pass on the 3D scene at the scene -> final image composite (`scene_composite`), at the
+scene's own size and in its format (A2B10G10R10, linear light), before FSR 1's EASU / RCAS and CAS; the composite then
+samples the result (`scene_up`). The game draws its HUD after the composite, so the HUD keeps its colours (checked:
+the hearts' pixels are identical with every preset and LUT). Frame generation's HUD-less copy and its final image
+come after it, so real and generated frames are graded alike; HDR10's output pass (device.c `hdr_write`) converts the
+graded SDR image. With every setting neutral (or `SAVAGEWIND_SCENE_GRADE=0`) the pass doesn't run.
+
+**The pass.** In linear light: exposure x white balance as RGB gains (temperature moves red against blue by 0.3 x t,
+tint green by 0.2 x t, then normalised to the same Rec. 709 luma), saturation around luma. Then sRGB-encoded, as the
+picture is seen: contrast as an S curve through 0, 0.5 and 1 (slope 1 + contrast in the middle, so nothing clips),
+and the LUT (RGBA16F 3D texture, trilinear, sampled at texel centres: `u * (n - 1) / n + 0.5 / n`, after DOMAIN_MIN /
+MAX), mixed in by its intensity. Back to linear for the composite.
+
+**Presets.** Natural (neutral), Warm, Cool, Vivid, Cinematic, Muted: slider values only (`g_color_presets`), set by
+eye on the Great Plateau by day and in the evening. The preset row shows Custom when the sliders match none.
+
+**LUTs.** `.cube` (LUT_3D_SIZE 2..64, DOMAIN_MIN / MAX, TITLE and comments; 1D LUTs refused) and ReShade-style PNG
+strips (N*N x N: 1024 x 32, 4096 x 64; slice = blue, x = red, y = green). Listed: the shipped ones (`colour-luts/`
+next to the executable; `third_party/luts` in a source build: three CC0 LUTs from FreshLUTs, see its README) then the
+player's (`<data root>/luts/`, made at the first listing; rescanned each time the page opens). The first setup offers
+Savage Wind's own look (`COLOR_LUT_RECOMMENDED`, the shipped `Savage_Wind.cube` at 80% intensity,
+`COLOR_LUT_RECOMMENDED_STRENGTH`): the start screen's "Savage Wind colour look" toggle, on unless the ini already
+names a LUT (`colour_lut`, `none` included). Players' third-party packs (e.g. Nexus ones whose licence forbids
+redistribution) are never shipped: they load them themselves.
+
+**Cost** (RTX 3060, Great Plateau, `SAVAGEWIND_GPUPROF_AT`, three frames each): 0.10 ms at 1920 x 1080, 0.13 ms at
+2560 x 1440; the LUT adds 0.005-0.008 ms. Neutral: 0 (no pass).
+
+**Tests.** `SAVAGEWIND_COLOUR_AT=<frame>:<exposure>/<contrast>/<saturation>/<temperature>/<tint>/<LUT %>/<LUT>,...`
+(ascending; exposure in tenths of an EV; the LUT as the ini names it) changes the look during a run, for A/B shots of
+one view with `SAVAGEWIND_WINDOW_SHOT_AT`. Checked hidden: neutral, each preset, five LUTs; with AMD FSR 1 (Quality,
+1707 x 960 -> 2560 x 1440), with FSR 3 frame generation (generated and real frames graded alike) and with HDR10 on
+(hidden runs on the test PC are HDR10; the shots are the SDR image before the HDR pass, so the PQ output itself was
+not looked at on a display).
 
 ## Audio
 

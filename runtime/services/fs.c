@@ -52,6 +52,7 @@ typedef struct {
     int ngrown;
     uint8_t *rstb_blob;      // the patched ResourceSizeTable served from memory (rstb_patch)
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
+    uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
 } RomImage;
 #define AOC_MAX 8
 static RomImage images[1 + AOC_MAX];  // [0] the game's, [index] add-on content
@@ -67,7 +68,7 @@ RT_ON_RESET(fs_reset) {
         }
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
-        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack);
+        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
         romfs_image_close(m->img);
         *m = (RomImage){0};
     }
@@ -272,9 +273,65 @@ static int by_name_after(const void *a, const void *b) {  // (RomFile * by the p
     return strcmp(strchr(x->path + 6, '/') + 1, strchr(y->path + 6, '/') + 1);
 }
 
+static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+
+// One AMTA (a line's metadata) of a little-endian BARS bank: its offset, line name, DATA and MARK sections, or false
+typedef struct { uint32_t at, data, mark; const char *name; } Amta;
+static bool bars_amta(const uint8_t *d, size_t n, uint32_t i, Amta *a) {
+    uint32_t cnt = rd32(d + 12);
+    if (16 + (uint64_t)cnt * 12 > n || i >= cnt) return false;
+    uint32_t at = rd32(d + 16 + cnt * 4 + i * 8), wave = rd32(d + 20 + cnt * 4 + i * 8);
+    if (wave != 0xFFFFFFFFu || (uint64_t)at + 0x1C > n || memcmp(d + at, "AMTA\xFF\xFE", 6)) return false;  // (streamed)
+    uint64_t data = at + (uint64_t)rd32(d + at + 0xC), mark = at + (uint64_t)rd32(d + at + 0x10);
+    uint64_t strg = at + (uint64_t)rd32(d + at + 0x18);
+    if (data + 0x24 > n || memcmp(d + data, "DATA", 4) || mark + 12 > n || memcmp(d + mark, "MARK", 4) ||
+        mark + 12 + (uint64_t)rd32(d + mark + 8) * 16 > n || strg + 9 > n || memcmp(d + strg, "STRG", 4) ||
+        !memchr(d + strg + 8, 0, n - strg - 8))
+        return false;
+    *a = (Amta){at, (uint32_t)data, (uint32_t)mark, (const char *)d + strg + 8};
+    return true;
+}
+
+// The game turns a cutscene subtitle's pages at the markers (AMTA MARK: {id, name, sample, length}) of the line in its
+// voice bank, Voice/<lang>/<Demo>.bars; the markers are timed for that folder's own text, tagged with the text languages
+// they serve ("USen,EUen", "EUnl"), and the banks hold no audio (that is in Stream_*/). Another language's bank has
+// other markers: pt-BR text with Japanese voices showed 5 of King Rhoam's 13 pages (Demo154_1, #169). So the bank
+// the game reads stays its own (`own`, patched in place) with each line's DATA (its length in samples, the only field
+// that differs) from the chosen voices' bank, and its markers moved by the ratio of the two lengths. Its size doesn't
+// change, so the ResourceSizeTable fits. False for a bank laid out otherwise (the NV_Custom_* ones carry their sounds):
+// that one is redirected whole.
+static bool bars_hybrid(uint8_t *own, size_t on, const uint8_t *vb, size_t vn) {
+    if (on < 16 || vn < 16 || memcmp(own, "BARS", 4) || memcmp(vb, "BARS", 4) || memcmp(own + 8, "\xFF\xFE", 2) ||
+        memcmp(vb + 8, "\xFF\xFE", 2))
+        return false;
+    uint32_t cnt = rd32(own + 12), vcnt = rd32(vb + 12);
+    Amta a, v;
+    for (uint32_t i = 0; i < vcnt; i++)
+        if (!bars_amta(vb, vn, i, &v)) return false;
+    for (uint32_t i = 0; i < cnt; i++) {
+        if (!bars_amta(own, on, i, &a)) return false;
+        uint32_t j = 0;
+        while (j < vcnt && bars_amta(vb, vn, j, &v) && strcmp(v.name, a.name)) j++;
+        if (j == vcnt) continue;  // (a line the voices don't have: left as is)
+        uint64_t dn = 8 + (uint64_t)rd32(vb + v.data + 4);
+        if (rd32(own + a.data + 4) != dn - 8 || a.data + dn > on || v.data + dn > vn) continue;
+        uint64_t len = rd32(own + a.data + 0x20), vlen = rd32(vb + v.data + 0x20);
+        memcpy(own + a.data, vb + v.data, dn);
+        if (!len) continue;
+        for (uint32_t m = 0, nm = rd32(own + a.mark + 8); m < nm; m++)
+            for (int f = 8; f <= 12; f += 4) {  // (sample, length)
+                uint8_t *p = own + a.mark + 12 + m * 16 + f;
+                uint32_t s = (uint32_t)((rd32(p) * vlen + len / 2) / len);
+                memcpy(p, &s, 4);
+            }
+    }
+    return true;
+}
+
 // Voices in another language than the text (runtime/language.c): every Voice/<lang>/<path> but Common's takes the
 // data of the chosen folder's <path> when it has one (the .bars banks and the Stream_*/ dialogue streams). (The game reads its text language's folder or a fallback;
-// whichever it is, it gets the chosen voices.) Only the file-meta entries change: the data stays in the image.
+// whichever it is, it gets the chosen voices.) Only the file-meta entries change: the data stays in the image, but
+// for the banks that keep their own subtitle markers (bars_hybrid), served from memory.
 static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     const char *vf = language_voice_folder();
     if (!vf) return;
@@ -287,13 +344,23 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         if (!strncmp(R->rom_files[i].path, pre, pl)) chosen[nc++] = &R->rom_files[i];
     if (!nc) { LOG("[fs] voices: the RomFS has no %s folder, the game's own voices play\n", pre); free(chosen); return; }
     qsort(chosen, nc, sizeof *chosen, by_name_after);
-    int n = 0;
+    int n = 0, nh = 0;
+    struct Hybrid { int file; uint8_t *data; } *hy = malloc(sizeof *hy * R->rom_nfiles);
     for (int i = 0; i < R->rom_nfiles; i++) {
         const char *p = R->rom_files[i].path;
         if (strncmp(p, "Voice/", 6) || !strncmp(p, pre, pl) || !strncmp(p, "Voice/Common/", 13)) continue;
         if (!strchr(p + 6, '/')) continue;
         RomFile *key = &R->rom_files[i], **hit = bsearch(&key, chosen, nc, sizeof *chosen, by_name_after);
         if (!hit) continue;
+        size_t pn = strlen(p), on = R->rom_files[i].size, vn = (*hit)->size;
+        if (pn > 5 && !strcmp(p + pn - 5, ".bars") && on < (1u << 20) && vn < (1u << 20)) {
+            uint8_t *own = malloc(on ? on : 1), *vb = malloc(vn ? vn : 1);
+            bool ok = romfs_image_pread(R->img, own, on, R->rom_files[i].off) == (ssize_t)on &&
+                      romfs_image_pread(R->img, vb, vn, (*hit)->off) == (ssize_t)vn && bars_hybrid(own, on, vb, vn);
+            free(vb);
+            if (ok) { hy[nh++] = (struct Hybrid){i, own}; n++; continue; }
+            free(own);
+        }
         uint8_t *meta = meta_copy(fmeta, foff, fsz);
         memcpy(meta + R->rom_files[i].meta + 8, fmeta + (*hit)->meta + 8, 16);  // (data offset, size)
         if ((*hit)->size > R->rom_files[i].size) {
@@ -303,7 +370,25 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         n++;
     }
     free(chosen);
-    LOG("[fs] voices: %d files play %s's voices\n", n, vf);
+    if (nh) {  // the banks, one after another past the end of the image
+        uint8_t *meta = meta_copy(fmeta, foff, fsz);
+        uint64_t total = 0;
+        for (int k = 0; k < nh; k++) total += (R->rom_files[hy[k].file].size + 0xF) & ~0xFull;
+        R->voice_banks = calloc(1, total);
+        for (uint64_t k = 0, at = 0; k < (uint64_t)nh; k++) {
+            RomFile *f = &R->rom_files[hy[k].file];
+            uint64_t rel = R->ov_end + at - R->rom_data_off;
+            memcpy(R->voice_banks + at, hy[k].data, f->size);
+            memcpy(meta + f->meta + 8, &rel, 8);
+            free(hy[k].data);
+            at += (f->size + 0xF) & ~0xFull;
+        }
+        if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+        R->ov[R->ov_n++] = (Overlay){R->ov_end, total, NULL, -1, R->voice_banks};
+        R->ov_end = (R->ov_end + total + 0xF) & ~0xFull;
+    }
+    free(hy);
+    LOG("[fs] voices: %d files play %s's voices (%d banks keep the text's subtitle markers)\n", n, vf, nh);
 }
 
 // The game sets aside memory for a resource by its path's entry in System/Resource/ResourceSizeTable (the RSTB: the
@@ -879,6 +964,8 @@ static Service *open_aoc_storage(int index) {
     aoc_dir(index, dir, sizeof dir);
     Service *s = open_image(index, dir, "IStorage(aoc)");
     LOG("[fs] add-on content %d: %s%s\n", index, dir, s ? "" : " (missing)");
+    extern void rt_title_menu_dlc(void);  // (runtime/ui/game_options.mm: the title menu's Downloadable Content button)
+    if (s) rt_title_menu_dlc();
     return s;
 }
 

@@ -27,6 +27,7 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 extern "C" {
 #include "../hle.h"
 #include "../settings.h"
+#include "../color_grade.h"
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
@@ -521,6 +522,68 @@ extern "C" {
 #include "../nvn/output_scale.h"
 }
 
+#ifndef __APPLE__
+// Colour (runtime/color_grade.h; vulkan/exec.c scene_post), the Video tab's last section: a preset sets the sliders,
+// which then show "Custom" when they match none
+static void tab_colour(void) {
+    opt_section("Colour");
+    {
+        static std::string names_buf[16];
+        const char *names[16];
+        bool avail[16];
+        int n = g_color_preset_count;
+        for (int i = 0; i <= n && i < 16; i++) {
+            names_buf[i] = tr(i < n ? g_color_presets[i].name : "Custom");
+            names[i] = names_buf[i].c_str();
+            avail[i] = i < n;
+        }
+        static int shown = -1;
+        int v = color_preset_current();
+        if (v < 0) v = n;  // (custom: shown, never picked)
+        if (opt_choice_avail("Colour preset", &v, &shown, names, avail, n + 1, 0,
+                             "Ready-made looks for the 3D image, made from the sliders below: Natural is the game's "
+                             "own colours, Warm and Cool shift the light, Vivid and Cinematic add contrast, Muted "
+                             "calms the colours. The HUD and menus keep their colours.") && v < n)
+            color_preset_apply(v);
+    }
+    float ev = g_settings.color_exposure / 10.0f;
+    if (opt_slider("Exposure", &ev, -2, 2, 0.1f, 0, "%+.1f EV",
+                   "Makes the 3D image brighter or darker, in stops: +1 EV is twice as bright."))
+        g_settings.color_exposure = (int)lroundf(ev * 10);
+    opt_int("Contrast", &g_settings.color_contrast, -50, 50, 5, 0, "%+d",
+            "More (or less) difference between dark and bright areas. Shadows and highlights keep their detail.");
+    opt_int("Saturation", &g_settings.color_saturation, -100, 100, 5, 0, "%+d",
+            "How strong the colours are. -100: black and white.");
+    opt_int("Temperature", &g_settings.color_temperature, -100, 100, 5, 0, "%+d",
+            "The colour of the light: below 0 cooler (bluer), above 0 warmer (more orange).");
+    opt_int("Tint", &g_settings.color_tint, -100, 100, 5, 0, "%+d",
+            "Below 0 toward green, above 0 toward magenta: evens out a colour cast.");
+    {   // LUT: None, the shipped ones, the player's own (listed again every couple of seconds while shown)
+        static int n;
+        static uint64_t at;
+        if (!n || SDL_GetTicks() - at > 2000) n = color_lut_list(), at = SDL_GetTicks();
+        static std::string none;
+        none = tr("None");
+        const char *names[COLOR_LUT_MAX];
+        for (int i = 0; i < n; i++) names[i] = i ? color_lut_name(i) : none.c_str();
+        int cur = color_lut_index(g_settings.color_lut);
+        char desc[1500];
+        snprintf(desc, sizeof desc,
+                 tr("A look-up table (LUT) that recolours the 3D image. Savage Wind's own are listed first. Your own LUTs "
+                    "go in this folder: .cube files (up to 64 x 64 x 64) and ReShade-style .png strips (1024 x 32, "
+                    "4096 x 64). They are listed by file name.\n\n%s"), color_lut_folder());
+        bool picked;
+        if (opt_list("LUT", &cur, names, n, 0, desc, &picked))
+            snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", color_lut_id(cur));
+    }
+    opt_indent(1);
+    if (!g_settings.color_lut[0]) opt_disable_next();
+    opt_int("LUT intensity", &g_settings.color_lut_strength, 0, 100, 5, 100, "%d%%",
+            "How much of the LUT's look is used: 100% is all of it, 0% none.");
+    opt_indent(-1);
+}
+#endif
+
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
@@ -727,6 +790,9 @@ static void tab_display(void) {
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
+#ifndef __APPLE__
+    tab_colour();
+#endif
     opt_end();
 }
 

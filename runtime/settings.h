@@ -64,6 +64,15 @@ typedef struct {
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
+    // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
+    int color_exposure;      // tenths of an EV, -20..20
+    int color_contrast;      // percent, -50..50
+    int color_saturation;    // percent, -100..100 (-100: black and white)
+    int color_temperature;   // -100 (cooler, blue) .. 100 (warmer, orange)
+    int color_tint;          // -100 (green) .. 100 (magenta)
+    char color_lut[128];     // color_lut_id(): "" none, "sw:<file>" shipped, "<file>" the player's luts/ folder
+    int color_lut_strength;  // percent, 0..100
+    bool color_lut_set;      // the ini names a LUT (or none): the player chose; the first setup offers COLOR_LUT_RECOMMENDED
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)

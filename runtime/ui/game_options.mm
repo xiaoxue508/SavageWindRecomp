@@ -34,6 +34,7 @@ extern "C" {
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
 #include "../settings.h"
+#include "../color_grade.h"
 #include "../window_size.h"
 void rt_request_reboot(int kind);           // runtime/main.c (1: start the game again)
 void menu_request_window_apply(void);       // menu.mm (fullscreen / window size, applied by the window loop)
@@ -82,7 +83,7 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
 enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
 
 struct Item {
@@ -164,6 +165,7 @@ constexpr int DEADZONE_DEFAULT = 4;
 static_assert(k_deadzone[DEADZONE_DEFAULT] == (int)(STICK_DEADZONE_DEFAULT * 100 + 0.5f));
 const char *const k_invert[] = {"Off", "Up and down", "Left and right", "Both"};  // (MOTION_INVERT_* bits)
 #define N(a) (int)(sizeof(a) / sizeof((a)[0]))
+int g_nluts = 1;  // Colour > LUT's values (color_lut_list: None, the shipped ones, the player's), listed per opening
 
 int nearest(const int *v, int n, float x) {
     int best = 0;
@@ -251,6 +253,9 @@ void build_items(void) {
     // first page: the sections (the game's own options are on Gameplay and Controls)
     v.push_back(button(P_MAIN, "Gameplay", "Mini-map, HUD, jump button and more.", "Open", A_PAGE, P_GAMEPLAY));
     v.push_back(button(P_MAIN, "Video", "Screen, resolution and image quality.", "Open", A_PAGE, P_VIDEO));
+#ifndef __APPLE__
+    v.push_back(button(P_MAIN, "Colour", "Presets, exposure, contrast, saturation and LUTs.", "Open", A_PAGE, P_COLOUR));
+#endif
     v.push_back(button(P_MAIN, "Audio", "Volume and sound effects.", "Open", A_PAGE, P_AUDIO));
     v.push_back(button(P_MAIN, "Controls", "Camera, motion, d-pad, mouse and button icons.", "Open", A_PAGE, P_CONTROLS));
     v.push_back(button(P_MAIN, "Keyboard (buttons)", "Which key does each button.", "Open", A_PAGE, P_KEYS));
@@ -384,6 +389,75 @@ void build_items(void) {
                        [](const Item &) { return N(k_shadow); }, [](const Item &, int x) { return tr(k_shadow[x]); },
                        [](const Item &) { return g_settings.shadow_res; },
                        [](const Item &, int x) { g_settings.shadow_res = x; }, SHADOW_CONSOLE));
+
+#ifndef __APPLE__
+    // Colour (runtime/color_grade.h; vulkan/exec.c scene_post): the 3D image only, the HUD keeps its colours. The preset
+    // sets the sliders below it; "Custom" (sliders matching no preset) is shown, never picked.
+    Item preset = choice(P_COLOUR, "Colour preset", "Ready-made looks. Natural: the game's own colours.",
+                         [](const Item &) { return g_color_preset_count + 1; },
+                         [](const Item &, int x) { return tr(x < g_color_preset_count ? g_color_presets[x].name : "Custom"); },
+                         [](const Item &) {
+                             int p = color_preset_current();
+                             return p < 0 ? g_color_preset_count : p;
+                         },
+                         [](const Item &, int x) { color_preset_apply(x); }, 0);
+    preset.value_off = [](const Item &, int x) { return x >= g_color_preset_count; };
+    preset.reset = [](const Item &) {
+        color_preset_apply(0);
+        g_settings.color_lut[0] = 0;
+        g_settings.color_lut_strength = 100;
+    };
+    v.push_back(preset);
+    v.push_back(choice(P_COLOUR, "Exposure", "Brighter or darker 3D image, in stops (EV).",
+                       [](const Item &) { return 41; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%+.1f EV", (x - 20) / 10.0);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) { return g_settings.color_exposure + 20; },
+                       [](const Item &, int x) { g_settings.color_exposure = x - 20; }, 20));
+    // contrast -50..50, the others -100..100, in steps of 5
+    auto signed_pct = [](const Item &it, int x) {
+        static char buf[32];
+        int v = (x - (it.count(it) - 1) / 2) * 5;
+        snprintf(buf, sizeof buf, v ? "%+d" : "%d", v);
+        return (const char *)buf;
+    };
+    v.push_back(choice(P_COLOUR, "Contrast", "More or less difference between dark and bright areas.",
+                       [](const Item &) { return 21; }, signed_pct,
+                       [](const Item &) { return g_settings.color_contrast / 5 + 10; },
+                       [](const Item &, int x) { g_settings.color_contrast = (x - 10) * 5; }, 10));
+    v.push_back(choice(P_COLOUR, "Saturation", "How strong the colours are. -100: black and white.",
+                       [](const Item &) { return 41; }, signed_pct,
+                       [](const Item &) { return g_settings.color_saturation / 5 + 20; },
+                       [](const Item &, int x) { g_settings.color_saturation = (x - 20) * 5; }, 20));
+    v.push_back(choice(P_COLOUR, "Temperature", "Cooler (blue) or warmer (orange) light.",
+                       [](const Item &) { return 41; }, signed_pct,
+                       [](const Item &) { return g_settings.color_temperature / 5 + 20; },
+                       [](const Item &, int x) { g_settings.color_temperature = (x - 20) * 5; }, 20));
+    v.push_back(choice(P_COLOUR, "Tint", "Toward green, or toward magenta.",
+                       [](const Item &) { return 41; }, signed_pct,
+                       [](const Item &) { return g_settings.color_tint / 5 + 20; },
+                       [](const Item &, int x) { g_settings.color_tint = (x - 20) * 5; }, 20));
+    Item lut = choice(P_COLOUR, "LUT", "A colour look. Yours: .cube or .png files in the luts folder.",
+                      [](const Item &) { return g_nluts; },
+                      [](const Item &, int x) { return x ? color_lut_name(x) : tr("None"); },
+                      [](const Item &) { return color_lut_index(g_settings.color_lut); },
+                      [](const Item &, int x) {
+                          snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", color_lut_id(x));
+                      }, 0);
+    v.push_back(lut);
+    v.push_back(choice(P_COLOUR, "LUT intensity", "How much of the LUT's look is used.",
+                       [](const Item &) { return 11; },
+                       [](const Item &, int x) {
+                           static std::string str;
+                           str = pct(x * 10);
+                           return str.c_str();
+                       },
+                       [](const Item &) { return (g_settings.color_lut_strength + 5) / 10; },
+                       [](const Item &, int x) { g_settings.color_lut_strength = x * 10; }, 10));
+#endif
 
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
@@ -657,6 +731,7 @@ extern "C" void rt_opt_rows(void) {
     g_switching = false;
     std::vector<uint32_t> &o = g_order[page];
     g_shown.assign(g_items.size(), -1);
+    if (page == P_COLOUR) g_nluts = color_lut_list();  // (files the player added since the last opening)
     for (size_t i = 0; i < g_items.size(); i++) {  // (how many window sizes there are depends on the display)
         Entry &e = g_entries[GAME_ENTRIES + i];
         if (g_items[i].kind == KIND_CHOICE) e.last_value = e.first_value + game_count(g_items[i]) - 1;
@@ -711,7 +786,8 @@ extern "C" int rt_opt_store(uint64_t row) {
             fprintf(stderr, "[options] %s = %d at %.3f s\n", it->title, x, SDL_GetTicksNS() / 1e9);
     }
     if (it->kind != KIND_BUTTON) settings_save();
-    if (it->page == P_VIDEO) mark_all_rows(rd64(row));  // (the sizes offered follow Fullscreen, texts the upscaler)
+    // (the sizes offered follow Fullscreen, texts the upscaler; Colour: the preset sets the sliders, they the preset)
+    if (it->page == P_VIDEO || it->page == P_COLOUR) mark_all_rows(rd64(row));
     if (past_end) g_dirty.push_back(row);                // (first: the row shows the value at the other end)
     return 1;
 }
@@ -808,6 +884,12 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
     if (g_dirty.empty()) return 0;
     uint64_t r = g_dirty.back();
     g_dirty.pop_back();
+    // (the redraw shows the row's own value: read it again, for values set from another row - Colour's preset)
+    if (const Item *it = item_of_row(r); it && it->kind != KIND_BUTTON) rt_opt_read(r);
+    if (getenv("SAVAGEWIND_LOG_OPTIONS")) {
+        const Item *it = item_of_row(r);
+        fprintf(stderr, "[options] redraw %s value %u (%zu left)\n", it ? it->title : "?", rd32(r + 0x58), g_dirty.size());
+    }
     return r;
 }
 
@@ -837,10 +919,17 @@ extern "C" void rt_opt_back(void) {
 //    the title screen; the animation's handle is at the Options state field - 0x24 in 1.8.2 and 1.9.0, its pai1 block
 //    at handle + 0x18).
 // It was the menu's last button, so there is no gap.
+// With downloadable content set up the button opens the game's own list of the packs (no eShop): once the game mounts
+// an add-on content (rt_title_menu_dlc, from runtime/services/fs.c) the lists get it back and the pane is left alone.
 const uint32_t TITLE_DLC_BUTTON = 0x6d;
+static uint64_t g_dlc_lists[8];
+static int g_ndlc_lists;
+static bool g_dlc_button;
 
 extern "C" void rt_title_menu_prepare(void) {
     int n = 0;
+    g_ndlc_lists = 0;
+    g_dlc_button = false;
     for (uint64_t p = g_site.main_data; p + 0x10 <= g_site.main_end; p += 8) {
         uint32_t count = rd32(p);
         uint64_t ids = rd64(p + 8);
@@ -853,12 +942,22 @@ extern "C" void rt_title_menu_prepare(void) {
         }
         if (!menu || rd32(ids + 4 * (count - 1)) != TITLE_DLC_BUTTON) continue;
         wr32(p, count - 1);
+        if (g_ndlc_lists < 8) g_dlc_lists[g_ndlc_lists++] = p;
         n++;
     }
     fprintf(stderr, "[options] title menu: Downloadable Content left out of %d button lists\n", n);
 }
 
+extern "C" void rt_title_menu_dlc(void) {
+    if (g_dlc_button) return;
+    g_dlc_button = true;
+    for (int i = 0; i < g_ndlc_lists; i++) wr32(g_dlc_lists[i], rd32(g_dlc_lists[i]) + 1);
+    fprintf(stderr, "[options] title menu: Downloadable Content back in %d button lists (add-on content mounted)\n",
+            g_ndlc_lists);
+}
+
 static void title_hide_dlc(uint64_t menu) {
+    if (g_dlc_button) return;
     uint64_t anim = rd64(menu + g_site.title_options_state - 0x24);
     uint64_t pai = anim ? rd64(anim + 0x18) : 0;
     if (!pai || memcmp((const void *)(uintptr_t)pai, "pai1", 4)) return;

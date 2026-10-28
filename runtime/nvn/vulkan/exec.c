@@ -16,6 +16,7 @@
 #include "vk.h"
 #include "../renderer.h"
 #include "../../settings.h"
+#include "../../color_grade.h"
 #include "../output_scale.h"
 #include "framegen.h"
 #include "../../game_sites.h"
@@ -1027,6 +1028,20 @@ static void readbacks_apply(void) {
                     LOG("[vk] linear render target %llx (last fs %016llx) saved as %s\n", (unsigned long long)r->addr,
                         (unsigned long long)r->fs, path);
                 }
+            }
+            static int lexp = -1;  // (debugging) SAVAGEWIND_LOG_EXPOSURE=1: small RGBA32F targets (exposure) as read back
+            if (lexp < 0) lexp = getenv("SAVAGEWIND_LOG_EXPOSURE") != NULL;
+            if (lexp && r->fmt == 0x2e && (uint64_t)r->row * r->rows <= 9 * 16) {
+                static struct { uint64_t addr, n; } seen[16];
+                int d = 0;
+                while (d < 15 && seen[d].addr && seen[d].addr != r->addr) d++;
+                seen[d].addr = r->addr;
+                const float *f = (const float *)r->ptr;
+                bool odd = false;
+                for (int j = 0; j < 4; j++) odd |= !isfinite(f[j]) || fabsf(f[j]) > 1e4f;
+                if (odd || seen[d].n++ % 120 == 0)
+                    LOG("[exposure] %llx seq %llu: %g %g %g %g%s\n", (unsigned long long)r->addr, (unsigned long long)r->seq,
+                        f[0], f[1], f[2], f[3], odd ? "  <- odd" : "");
             }
             for (uint32_t y = 0; y < r->rows; y++)
                 memcpy((void *)(uintptr_t)(r->addr + y * r->stride), r->ptr + (uint64_t)y * r->row, r->row);
@@ -3618,6 +3633,7 @@ void vk_exec_reset(void) {
 // The 3D scene upscaled / sharpened for this draw (scene_post): sampled instead of the scene texture, at its scale.
 static struct { NvnTexture *t; TexBackend *img; float sx, sy; } scene_up;
 static void scene_post(Prog *pr, CmdRec *r);
+static void save_view_png(TexBackend *b, VkImageView src, const char *path);
 static void fg_draw(Prog *pr, CmdRec *r);  // (frame generation, below: the camera, the depth, the HUD-less image)
 static void fg_before_draw(void);
 
@@ -5700,8 +5716,8 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
 
 // Post image `i` at w x h in format f (kept until the size or format changes). 0, 1: SMAA edges / weights, 2: SMAA
 // output, 3, 4: FSR EASU / RCAS of the presented image; 5, 6: FSR EASU / RCAS of the 3D scene, 7: its CAS
-// sharpening (scene_post).
-enum { POST_IMAGES = 8 };
+// sharpening, 8: its colour grading (scene_post).
+enum { POST_IMAGES = 9 };
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) {
     static TexBackend img[POST_IMAGES];
     TexBackend *d = &img[i];
@@ -5845,6 +5861,84 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     return v;
 }
 
+// ---- Colour grading (Video > Colour; runtime/color_grade.h): the LUT the settings name as a 3D texture (RGBA16F, n^3),
+// read again when the setting changes. NULL: none, or its file couldn't be read (logged once per change).
+static VkImageView grade_lut(int *n, float dmin[3], float dscale[3]) {
+    static TexBackend t;
+    static char loaded[sizeof g_settings.color_lut];
+    static int size;
+    static float lo[3], sc[3];
+    static bool ok;
+    if (strcmp(loaded, g_settings.color_lut)) {
+        snprintf(loaded, sizeof loaded, "%s", g_settings.color_lut);
+        ok = false;
+        ColorLut *l = color_lut_load(loaded);
+        if (l) {
+            uint32_t m = (uint32_t)l->n;
+            if (t.image && t.width != m) {
+                vk_views_forget(&t);
+                vk_defer_image(t.image, t.mem);
+                t.image = VK_NULL_HANDLE, t.mem = VK_NULL_HANDLE;
+            }
+            if (!t.image) {
+                VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_3D,
+                                        .format = VK_FORMAT_R16G16B16A16_SFLOAT, .extent = {m, m, m}, .mipLevels = 1,
+                                        .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+                VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+                VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &t.image, &t.mem, NULL));
+                t.format = ci.format; t.width = t.height = t.depth = m; t.layers = 1; t.levels = 1;
+                t.samples = 1; t.aspect = VK_IMAGE_ASPECT_COLOR_BIT; t.base_type = VK_IMAGE_VIEW_TYPE_3D;
+                vk_image_init_layout(vk_cmd(), t.image, t.aspect);
+            }
+            size_t texels = (size_t)m * m * m;
+            VkSpan sp = vk_transient(texels * 8, 16);
+            uint16_t *h = (uint16_t *)sp.ptr;
+            for (size_t i = 0; i < texels; i++) {
+                for (int c = 0; c < 4; c++) {
+                    _Float16 v = (_Float16)(c < 3 ? l->rgb[i * 3 + c] : 1.0f);
+                    memcpy(&h[i * 4 + c], &v, 2);
+                }
+            }
+            VkCommandBuffer cb = vk_cmd();
+            vk_full_barrier(cb);
+            VkBufferImageCopy c = {.bufferOffset = sp.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                   .imageExtent = {m, m, m}};
+            vkCmdCopyBufferToImage(cb, sp.buf, t.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+            vk_full_barrier(cb);
+            size = l->n;
+            for (int i = 0; i < 3; i++) lo[i] = l->dmin[i], sc[i] = 1 / (l->dmax[i] - l->dmin[i]);
+            ok = true;
+            color_lut_free(l);
+        } else if (loaded[0]) {
+            LOG("[colour] LUT \"%s\" not used (missing or unreadable)\n", loaded);
+        }
+    }
+    if (!ok) return VK_NULL_HANDLE;
+    *n = size;
+    memcpy(dmin, lo, sizeof lo), memcpy(dscale, sc, sizeof sc);
+    static const VkComponentMapping id = {0};
+    return vk_image_view(&t, VK_IMAGE_VIEW_TYPE_3D, t.format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
+// The grading the settings ask for, as grade.frag's push constants, and the LUT's view (or NULL). false: nothing to do
+// (every setting neutral, or SAVAGEWIND_SCENE_GRADE=0): the pass doesn't run.
+static bool grade_wanted(VkImageView *lut, float pc[16]) {
+    *lut = VK_NULL_HANDLE;
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_SCENE_GRADE") && !atoi(getenv("SAVAGEWIND_SCENE_GRADE"));
+    ColorGrade g;
+    if (off || !color_grade_get(&g)) return false;
+    int n = 0;
+    float dmin[3] = {0, 0, 0}, dscale[3] = {1, 1, 1};
+    if (g.lut_strength > 0) *lut = grade_lut(&n, dmin, dscale);
+    if (!*lut) g.lut_strength = 0;
+    float p[16] = {g.gain[0], g.gain[1], g.gain[2], g.contrast, g.saturation, g.lut_strength, (float)n, 0,
+                   dmin[0], dmin[1], dmin[2], 0, dscale[0], dscale[1], dscale[2], 0};
+    memcpy(pc, p, sizeof p);
+    return *lut || g.contrast != 1 || g.saturation != 1 || g.gain[0] != 1 || g.gain[1] != 1 || g.gain[2] != 1;
+}
+
 // ---- The 3D scene at the scene -> final image composite: FSR 1 (Video > Upscaler) and AMD CAS sharpening (Video >
 // Sharpening), on the 3D image only, before the game draws its HUD over it. The 3D scene's targets are at the internal
 // resolution (textures.c RS_SCENE), the final image at the window's (RS_OUT), and the game's composite draw would
@@ -5852,6 +5946,8 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
 // sharpens it; then CAS, if on, sharpens the result (or the native scene, with the upscaler off), all in the scene's
 // own format (10-bit: no banding); the draw then samples that at 1:1 (texture_info). SAVAGEWIND_SCENE_FSR=0: the
 // game's own bilinear composite (A/B); SAVAGEWIND_SCENE_CAS=0: no sharpening whatever the setting.
+// Colour grading (Video > Colour) comes first, at the scene's own size: the HUD is drawn after the composite and keeps
+// its colours; frame generation's HUD-less copy and HDR10's output (device.c) both start from the graded image.
 // The draw is the scene -> final image composite: a few vertices into the final image (RS_OUT) over most of it,
 // sampling a full-size scene target (not one of its reduced steps: bloom, blur). Its scene texture, or NULL.
 static NvnTexture *scene_composite(Prog *pr, CmdRec *r) {
@@ -5875,7 +5971,10 @@ static void scene_post(Prog *pr, CmdRec *r) {
     if (fsr_on < 0) fsr_on = getenv("SAVAGEWIND_SCENE_FSR") ? atoi(getenv("SAVAGEWIND_SCENE_FSR")) : 1;
     if (cas_on < 0) cas_on = getenv("SAVAGEWIND_SCENE_CAS") ? atoi(getenv("SAVAGEWIND_SCENE_CAS")) : 1;
     bool fsr = fsr_on && g_settings.upscaler == UPSCALE_FSR1, cas = cas_on && g_settings.sharpening > 0;
-    if (!fsr && !cas) return;
+    VkImageView lut;
+    float gpc[16];
+    bool grade = grade_wanted(&lut, gpc);
+    if (!fsr && !cas && !grade) return;
     NvnTexture *t = scene_composite(pr, r), *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!t) return;
     const float *vp = st.viewport[0];
@@ -5887,7 +5986,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
     {
         TexBackend *b = vk_tex(t, false);
         bool up = fsr && (ow > b->width + 1 || oh > b->height + 1);  // (else at its size in the window already)
-        if (!up && !cas) return;
+        if (!up && !cas && !grade) return;
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) return;
@@ -5897,13 +5996,27 @@ static void scene_post(Prog *pr, CmdRec *r) {
         VkImageView src = vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
         uint32_t w = b->width, h = b->height;
         TexBackend *out = NULL;
+        if (grade) {
+            TexBackend *g = post_image(8, w, h, b->format);
+            VkImageView gi[3] = {src, lut};
+            if (g_gpuprof_frame) gp_mark(cb, "colour grading%s", lut ? " + LUT" : "");
+            post_pass_pc(cb, lut ? "grade_lut.frag" : "grade.frag", gi, lut ? 2 : 1, g, gpc, sizeof gpc, false);
+            src = post_view(g);
+            out = g;
+        }
         if (up) {
+            if (g_gpuprof_frame) gp_mark(cb, "scene FSR 1");
             TexBackend *e = post_image(5, ow, oh, b->format), *o = post_image(6, ow, oh, b->format);
             float iw = (float)b->width, ih = (float)b->height;
-            float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
+            // (the scene is linear light - the composite gamma-encodes it -: EASU and RCAS work on its gamma 2.0 in
+            // between, b.z = 1; SAVAGEWIND_SCENE_FSR_LINEAR=1: in linear light, as before)
+            static int lin = -1;
+            if (lin < 0) lin = getenv("SAVAGEWIND_SCENE_FSR_LINEAR") != NULL;
+            float g2 = lin ? 0.0f : 1.0f;
+            float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih, g2};
             VkImageView in[3] = {src};
             post_pass(cb, "easu.frag", in, 1, e, pe, false);
-            float pr_[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh};  // (sharpness 0.2 stops: AMD's default)
+            float pr_[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh, g2};  // (sharpness 0.2 stops: AMD's default)
             VkImageView ri[3] = {post_view(e)};
             post_pass(cb, "rcas.frag", ri, 1, o, pr_, false);
             src = post_view(o);
@@ -5918,16 +6031,33 @@ static void scene_post(Prog *pr, CmdRec *r) {
             out = c;
         }
         vk_full_barrier(cb);
+        {   // (debug) SAVAGEWIND_SCENE_POST_DUMP=<frame> (counted as SAVAGEWIND_SHOT_AT): that frame's scene, its EASU
+            // and its RCAS output
+            extern uint64_t framepace_script_frame(uint64_t presented);
+            static long long dump_at = -2;
+            if (dump_at == -2) dump_at = getenv("SAVAGEWIND_SCENE_POST_DUMP") ? atoll(getenv("SAVAGEWIND_SCENE_POST_DUMP")) : -1;
+            if (dump_at >= 0 && framepace_script_frame(renderer_present_count() + 1) >= (uint64_t)dump_at) {
+                LOG("[post] scene dump at frame %llu\n", (unsigned long long)renderer_present_count());
+                dump_at = -1;
+                mkdir("build/frames", 0755);
+                save_view_png(b, vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT),
+                              "build/frames/scene_in.png");
+                if (up) save_view_png(post_image(5, ow, oh, b->format), post_view(post_image(5, ow, oh, b->format)),
+                                      "build/frames/scene_easu.png");
+                if (out) save_view_png(out, post_view(out), "build/frames/scene_out.png");
+                cb = vk_cmd();
+            }
+        }
         scene_up.t = t;
         scene_up.img = out;
         scene_up.sx = (float)w / (float)t->width;
         scene_up.sy = (float)h / (float)t->height;
         static uint32_t lw, lh, low, loh;
-        static int lcas = -1;
-        if (b->width != lw || b->height != lh || w != low || h != loh || g_settings.sharpening != lcas)
-            LOG("[post] scene %ux%u%s -> %ux%u%s (format %d)\n", b->width, b->height, up ? " fsr1" : "", w, h,
-                cas ? " cas" : "", b->format);
-        lw = b->width; lh = b->height; low = w; loh = h; lcas = g_settings.sharpening;
+        static int lcas = -1, lgrade = -1;
+        if (b->width != lw || b->height != lh || w != low || h != loh || g_settings.sharpening != lcas || grade != lgrade)
+            LOG("[post] scene %ux%u%s%s -> %ux%u%s (format %d)\n", b->width, b->height, grade ? " graded" : "",
+                up ? " fsr1" : "", w, h, cas ? " cas" : "", b->format);
+        lw = b->width; lh = b->height; low = w; loh = h; lcas = g_settings.sharpening; lgrade = grade;
         return;
     }
 }

@@ -37,6 +37,8 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n);
 bool rt_remove_game_file(const char *game_dir, const char *name);
 // All the game files set up there (rt_remove_game_file on each, then the empty folder). Saves, settings stay.
 bool rt_remove_game_files(const char *game_dir);
+// A symlink or junction, a broken one too (not followed)
+bool rt_is_link(const char *p);
 // Bytes taken by the extracted game files in game_dir (links not followed).
 unsigned long long rt_game_files_size(const char *game_dir);
 

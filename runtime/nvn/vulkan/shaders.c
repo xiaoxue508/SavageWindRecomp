@@ -684,14 +684,21 @@ static const char *builtin_src(const char *name, int *stage) {
     }
     // AMD FidelityFX Super Resolution 1 (MIT), EASU: edge-adaptive upscale. a = (in / out scale xy, offset zw),
     // b.xy = input size (alpha: bilinear, for the 3D scene's composite, exec.c scene_upscale). 12 taps around the source pixel, direction / edge length from luma, Lanczos-2-like
-    // weights stretched along the edge, clamped to the nearest 4 (no ringing).
+    // weights stretched along the edge, clamped to the nearest 4 (no ringing). b.z = 1: the input is linear (BOTW's
+    // 3D scene, exec.c scene_post): taken to gamma 2.0 first, as FSR 1 wants perceptual input, and left there for
+    // RCAS. In linear light the small differences in shadows and leaves counted for little next to the lit parts', so
+    // the edge directions and the clamp to the nearest 4 made flat blotches there once the composite's gamma brought
+    // them out: rocks and trees looked posterized, the more the smaller the scene (#141).
     if (!strcmp(name, "easu.frag")) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"
                "layout(set = 0, binding = 0) uniform sampler2D t;\n"
                "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
                "layout(location = 0) out vec4 o;\n"
-               "vec3 tap(ivec2 p) { return texelFetch(t, clamp(p, ivec2(0), ivec2(pc.b.xy) - 1), 0).rgb; }\n"
+               "vec3 tap(ivec2 p) {\n"
+               "  vec3 c = texelFetch(t, clamp(p, ivec2(0), ivec2(pc.b.xy) - 1), 0).rgb;\n"
+               "  return pc.b.z > 0.5 ? sqrt(max(c, vec3(0.0))) : c;\n"
+               "}\n"
                "float lum(vec3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
                "void setf(inout vec2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE) {\n"
                "  float dx = lD - lB, dy = lE - lA;\n"
@@ -756,6 +763,7 @@ static const char *builtin_src(const char *name, int *stage) {
     }
     // FSR 1 RCAS: contrast-adaptive sharpening of the EASU output (same size). a.x = sharpness (exp2(-stops)),
     // b.xy = image size. The lobe is limited so the result stays inside the neighbours' range; noise is damped.
+    // b.z = 1: the input is EASU's gamma 2.0 of a linear image, the output linear again.
     if (!strcmp(name, "rcas.frag")) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"
@@ -779,7 +787,8 @@ static const char *builtin_src(const char *name, int *stage) {
                "  vec3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, vec3(-1.0 / 65536.0));\n"
                "  vec3 lobeRGB = max(-hitMin, hitMax);\n"
                "  float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * pc.a.x * nz;\n"
-               "  o = vec4((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), texelFetch(t, ip, 0).a);\n"
+               "  vec3 r = (lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0);\n"
+               "  o = vec4(pc.b.z > 0.5 ? r * r : r, texelFetch(t, ip, 0).a);\n"
                "}\n";
     }
     // AMD FidelityFX CAS (MIT), contrast-adaptive sharpening without scaling (ffx_cas.h CasFilter, its green-weight
@@ -816,6 +825,40 @@ static const char *builtin_src(const char *name, int *stage) {
                "  vec3 r = (b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w);\n"
                "  o = vec4(clamp(r, 0.0, 1.0), e4.a);\n"
                "}\n";
+    }
+    // Colour grading of the 3D scene (Video > Colour; exec.c scene_post, runtime/color_grade.h). The scene holds
+    // linear light (BOTW's 10-bit composite input; the game sRGB-encodes the final image when it presents it). In
+    // linear light: g.rgb = exposure x white balance, a.x = saturation (Rec. 709 luma kept). Then, sRGB-encoded as the
+    // picture is seen: contrast, an S curve through 0, 0.5 and 1 with slope g.w in its middle, and (grade_lut.frag) the
+    // LUT, t1, sampled trilinearly at texel centres (a.z = its size) after DOMAIN_MIN / MAX (dmin, dscale), mixed in
+    // by a.y. Back to linear for the composite. Alpha passes through.
+    if (!strcmp(name, "grade.frag") || !strcmp(name, "grade_lut.frag")) {
+        *stage = STAGE_FRAGMENT;
+#define GRADE_BODY                                                                                              \
+    "layout(set = 0, binding = 0) uniform sampler2D t;\n"                                                       \
+    "layout(push_constant) uniform P { vec4 g; vec4 a; vec4 dmin; vec4 dscale; } pc;\n"                        \
+    "layout(location = 0) out vec4 o;\n"                                                                        \
+    "vec3 enc(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }\n" \
+    "vec3 dec(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }\n"     \
+    "void main() {\n"                                                                                           \
+    "  vec4 s = texelFetch(t, ivec2(gl_FragCoord.xy), 0);\n"                                                    \
+    "  vec3 c = s.rgb * pc.g.rgb;\n"                                                                            \
+    "  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"                                                       \
+    "  c = max(mix(vec3(y), c, pc.a.x), 0.0);\n"                                                                \
+    "  vec3 x = enc(min(c, 1.0));\n"                                                                            \
+    "  vec3 lo = 0.5 * pow(2.0 * x, vec3(pc.g.w)), hi = 1.0 - 0.5 * pow(max(2.0 - 2.0 * x, 0.0), vec3(pc.g.w));\n" \
+    "  x = mix(lo, hi, step(0.5, x));\n"                                                                        \
+    "#ifdef LUT\n"                                                                                              \
+    "  vec3 u = clamp((x - pc.dmin.xyz) * pc.dscale.xyz, 0.0, 1.0);\n"                                          \
+    "  vec3 l = texture(t1, u * ((pc.a.z - 1.0) / pc.a.z) + 0.5 / pc.a.z).rgb;\n"                               \
+    "  x = mix(x, clamp(l, 0.0, 1.0), pc.a.y);\n"                                                               \
+    "#endif\n"                                                                                                  \
+    "  o = vec4(dec(x), s.a);\n"                                                                                \
+    "}\n"
+        if (name[5] == '_')
+            return "#version 450\n#define LUT 1\nlayout(set = 0, binding = 1) uniform sampler3D t1;\n" GRADE_BODY;
+        return "#version 450\n" GRADE_BODY;
+#undef GRADE_BODY
     }
     // Frame generation's camera motion vectors (exec.c vk_fg_generate): the 3D scene's depth at each pixel back to
     // NDC, through m (the previous frame's view-projection x this one's inverse) to where that point was, as a uv

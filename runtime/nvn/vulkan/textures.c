@@ -146,6 +146,18 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
     return (p.optimalTilingFeatures & want) == want;
 }
 
+static bool format_is_float(VkFormat f) {  // (uncompressed: these can hold NaN and Inf)
+    switch (f) {
+    case VK_FORMAT_R16_SFLOAT: case VK_FORMAT_R16G16_SFLOAT: case VK_FORMAT_R16G16B16_SFLOAT:
+    case VK_FORMAT_R16G16B16A16_SFLOAT: case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32G32_SFLOAT:
+    case VK_FORMAT_R32G32B32_SFLOAT: case VK_FORMAT_R32G32B32A32_SFLOAT: case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+    case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // ================================================================== output resolution / per-frame clears
 // Render targets are allocated at one of two scales (runtime/nvn/output_scale.c sets both every presented frame):
 //   RS_OUT    the game's final image (1920x1080, its halves) and the display images: the window's resolution, so the
@@ -394,7 +406,12 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                  : t->target == 8 ? VK_IMAGE_VIEW_TYPE_CUBE : t->target == 9 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
                  : layers > 1 || t->target == 4 || t->target == 6 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     vk_image_init_layout(vk_upload_cmd(), b->image, b->aspect);
-    if (b->scalable && !depthfmt) {  // (made again at a new scale: no stale memory in what frames keep)
+    // New float colour targets start zeroed too: fresh memory holds whatever the last image there left, NaN and Inf
+    // included. BOTW makes its sky / ambient targets again when it comes back from the pause menu and blends their
+    // first contents into the 1x1 colours the CPU reads back (exec.c readbacks_apply): a NaN there stayed for good and
+    // washed the picture out (white, or neon green and yellow), about every other time at 2560 x 1440.
+    bool float_rt = (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && format_is_float(vf);
+    if ((b->scalable || float_rt) && !depthfmt) {  // (scalable: made again at a new scale, no stale memory in what frames keep)
         VkCommandBuffer cb = vk_upload_cmd();
         VkClearColorValue zero = {{0}};
         VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};

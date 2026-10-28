@@ -49,6 +49,7 @@ extern "C" {
 #include "game_versions.h"
 #include "romfs_build.h"
 #include "settings.h"
+#include "color_grade.h"
 #include "input_bind.h"
 #ifndef __APPLE__
 #include "nvn/precompile.h"
@@ -517,9 +518,10 @@ static bool setup_dlc(std::vector<std::string> dlc) {
     remove_dlc(g_root);
     for (size_t i = 0; i < by_files.size() && (int)i < DLC_MAX; i++) {
         const std::string &d = by_files[i].second, n = aoc_name(AOC_DIR, (int)i + 1);
-        struct stat sb;
-        if (!lstat((g_root + "/" + n).c_str(), &sb)) {  // (still there: a link, left alone - never copied into)
+        std::string to = g_root + "/" + n;
+        if (file_exists(to) || rt_is_link(to.c_str())) {  // (still there: a link, left alone - never copied into)
             fprintf(stderr, "[launcher] DLC: %s/%s is in the way (a link?)\n", g_root.c_str(), n.c_str());
+            remove_dlc(g_root);
             return false;
         }
         fprintf(stderr, "[launcher] DLC %zu: %s (%u files, version \"%s\")\n", i + 1, d.c_str(), by_files[i].first,
@@ -1504,10 +1506,29 @@ extern "C" void launcher_run(const char *root, int mode) {
                                        "files page of Savage Wind Configuration."))
                             settings_save();
                     }
+                    {   // Savage Wind's own colour look (runtime/color_grade.h): on at the first setup unless the player
+                        // chose a LUT before; Options > Colour changes it later
+                        if (!ready && !g_settings.color_lut_set) {
+                            snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", COLOR_LUT_RECOMMENDED);
+                            g_settings.color_lut_strength = COLOR_LUT_RECOMMENDED_STRENGTH;
+                            g_settings.color_lut_set = true;
+                        }
+                        bool look = !strcmp(g_settings.color_lut, COLOR_LUT_RECOMMENDED);
+                        if (busy) opt_disable_next();
+                        if (opt_toggle("Savage Wind colour look", &look, true,
+                                       "Recommended. The game's picture with Savage Wind's own colour look: a little "
+                                       "deeper and cooler. Change it or turn it off any time in the game's Options > "
+                                       "Colour (LUT).")) {
+                            snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", look ? COLOR_LUT_RECOMMENDED : "");
+                            g_settings.color_lut_strength = look ? COLOR_LUT_RECOMMENDED_STRENGTH : 100;
+                            settings_save();
+                        }
+                    }
 #endif
                     if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
                     if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
                                    true)) {
+                        settings_save();  // (the colour look as chosen above)
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
                         pthread_mutex_unlock(&g_lock);

@@ -34,6 +34,7 @@ Settings g_settings = {
     .vsync = VSYNC_DEFAULT,
     .wide_view = true,
     .fov = 100,
+    .color_lut_strength = 100,
 };
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
@@ -132,6 +133,16 @@ void settings_load(void) {
             g_settings.hdr_white = n >= 80 && n <= 1000 ? n : 0;
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
+        else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
+        else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
+        else if (!strcmp(key, "colour_saturation")) g_settings.color_saturation = atoi(val);
+        else if (!strcmp(key, "colour_temperature")) g_settings.color_temperature = atoi(val);
+        else if (!strcmp(key, "colour_tint")) g_settings.color_tint = atoi(val);
+        else if (!strcmp(key, "colour_lut")) {  // (none: no LUT)
+            snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", strcmp(val, "none") ? val : "");
+            g_settings.color_lut_set = true;
+        }
+        else if (!strcmp(key, "colour_lut_strength")) g_settings.color_lut_strength = atoi(val);  // (percent)
         else if (!strcmp(key, "shadow_resolution"))  // (console / high / ultra / extreme)
             g_settings.shadow_res = !strcmp(val, "extreme") ? SHADOW_EXTREME : !strcmp(val, "ultra") ? SHADOW_ULTRA
                                   : !strcmp(val, "high") ? SHADOW_HIGH : SHADOW_CONSOLE;
@@ -183,6 +194,14 @@ void settings_load(void) {
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
+#define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
+    g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
+    g_settings.color_contrast = CLAMP(g_settings.color_contrast, -50, 50);
+    g_settings.color_saturation = CLAMP(g_settings.color_saturation, -100, 100);
+    g_settings.color_temperature = CLAMP(g_settings.color_temperature, -100, 100);
+    g_settings.color_tint = CLAMP(g_settings.color_tint, -100, 100);
+    g_settings.color_lut_strength = CLAMP(g_settings.color_lut_strength, 0, 100);
+#undef CLAMP
     for (int i = 0; i < 2; i++)
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
             g_settings.stick_deadzone[i] = STICK_DEADZONE_DEFAULT;
@@ -240,6 +259,13 @@ void settings_save(void) {
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
+    fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
+    fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
+    fprintf(f, "colour_saturation = %d\n", g_settings.color_saturation);
+    fprintf(f, "colour_temperature = %d\n", g_settings.color_temperature);
+    fprintf(f, "colour_tint = %d\n", g_settings.color_tint);
+    fprintf(f, "colour_lut = %s\n", g_settings.color_lut[0] ? g_settings.color_lut : "none");
+    fprintf(f, "colour_lut_strength = %d\n", g_settings.color_lut_strength);
     int tl = g_settings.text_language, vl = g_settings.voice_language;
     fprintf(f, "text_language = %s\n", tl > 0 && tl < g_ntext_languages ? g_text_languages[tl].folder : "auto");
     fprintf(f, "voice_language = %s\n", vl > 0 && vl < g_nvoice_languages ? g_voice_languages[vl].folder : "text");

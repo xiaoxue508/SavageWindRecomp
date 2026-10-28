@@ -130,6 +130,8 @@ SITES = [
     Site('persp_unproject_x', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 18),
     # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
+    # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
+    Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     Site('gui_speed', 'code', 'bd0b2100 94000000/fc000000 f9400260 94000000/fc000000 52800020 94000000/fc000000 '
          'a9414ff4 a8c27bfd', 0),
     Site('pause_state', 'ref', '90000013/9f00001f b9400268/ffc003ff 35000008/ff00001f 90000008/9f00001f '
@@ -216,6 +218,7 @@ KNOWN = {
         'vfr_ratio': 0x70014092f4,
         'gui_speed': 0x700116d0e8,
         'arrow_fall_gravity': 0x70004db204,
+        'phys_solver_steps': 0x700145b790,
         'persp_matrix': 0x7000da1400,
         'persp_matrix_offset': 0x7000da1408,
         'persp_unproject_y': 0x7000da14d8,
@@ -269,6 +272,7 @@ KNOWN = {
         'vfr_ratio': 0x700151d494,
         'gui_speed': 0x7001280ee8,
         'arrow_fall_gravity': 0x70005ee734,
+        'phys_solver_steps': 0x700156f930,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
         'persp_unproject_y': 0x7000eb4b28,
